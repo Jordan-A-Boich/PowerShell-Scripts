@@ -1,3 +1,8 @@
+$CheckMetadata = @{
+    Name = "Disk Space"
+    Category = "OS"
+}
+
 function Test-DiskSpace {
 
     param(
