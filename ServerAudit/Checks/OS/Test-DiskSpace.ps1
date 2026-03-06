@@ -1,6 +1,7 @@
 $CheckMetadata = @{
     Name = "Disk Space"
     Category = "OS"
+    Type = "Health"
 }
 
 function Test-DiskSpace {
@@ -26,7 +27,7 @@ function Test-DiskSpace {
                 -Status "Warning" `
                 -Severity "Medium" `
                 -Message "Low disk space" `
-                -Details "$($disk.Name) - $percentFree% free | $spaceLeft\GB remaining"
+                -Details "$($disk.Name) - $percentFree% free | $spaceLeft GB remaining"
         }
         elseif ($percentFree -lt 20) {
 
@@ -37,7 +38,7 @@ function Test-DiskSpace {
                 -Status "Alert" `
                 -Severity "Critical" `
                 -Message "Disk space unhealthy" `
-                -Details "$($disk.Name) - $percentFree% free | $spaceLeft\GB remaining"
+                -Details "$($disk.Name) - $percentFree% free | $spaceLeft GB remaining"
         }
         else {
 
@@ -48,7 +49,7 @@ function Test-DiskSpace {
                 -Status "Pass" `
                 -Severity "Info" `
                 -Message "Disk space healthy" `
-                -Details "$($disk.Name) - $percentFree% free | $spaceLeft\GB remaining"
+                -Details "$($disk.Name) - $percentFree% free | $spaceLeft GB remaining"
         }
     }
 }

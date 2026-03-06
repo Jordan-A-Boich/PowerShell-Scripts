@@ -16,6 +16,7 @@ foreach($check in $CheckFiles){
         $CheckRegistry += [PSCustomObject]@{
             Name = $CheckMetadata.Name
             Category = $CheckMetadata.Category
+            Type = $CheckMetadata.Type
             Function = "Test-" + ($CheckMetadata.Name -replace " ","")
         }
 
@@ -55,4 +56,43 @@ foreach ($check in $CheckRegistry) {
     }
 }
 
-$Results | Format-Table
+$ServerSummary = $Results | Group-Object Server | ForEach-Object {
+
+    $status = "Healthy"
+
+    if ($_.Group.Status -contains "Critical") {
+        $status = "Critical"
+    }
+    elseif ($_.Group.Status -contains "Warning") {
+        $status = "Warning"
+    }
+
+    [PSCustomObject]@{
+        Server = $_.Name
+        Status = $status
+    }
+
+}
+
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
+
+$ReportPath = ".\Reports\$timestamp"
+
+New-Item -ItemType Directory -Path $ReportPath -Force | Out-Null
+
+# -----------------------------
+# EXPORT RAW DATA
+# -----------------------------
+
+$Results | ConvertTo-Json -Depth 10 | Out-File "$ReportPath\AuditResults.json"
+
+# -----------------------------
+# BUILD HTML REPORT
+# -----------------------------
+
+. .\ServerAudit\Modules\Write-HtmlReport.ps1
+
+Write-HtmlReport `
+    -Results $Results `
+    -ServerSummary $ServerSummary `
+    -OutputPath $ReportPath
