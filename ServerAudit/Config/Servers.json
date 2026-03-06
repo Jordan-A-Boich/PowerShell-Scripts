@@ -1,0 +1,12 @@
+{
+  "Servers": [
+    {
+      "Name": "WHITE-LIGHTNING",
+      "Instance": null
+    },
+    {
+      "Name": "WHITE-LIGHTNING",
+      "Instance": "SQL2025"
+    }
+  ]
+}
