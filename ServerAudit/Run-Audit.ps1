@@ -28,6 +28,20 @@ $serversForOSChecks = $Servers | Select-Object -ExpandProperty Name -Unique
 
 $Results = @()
 
+# -----------------------------
+# REPORT SETUP (MUST BE BEFORE SQL)
+# -----------------------------
+
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
+
+$ReportPath = ".\Reports\$timestamp"
+
+New-Item -ItemType Directory -Path $ReportPath -Force | Out-Null
+
+# -----------------------------
+# CHECK EXECUTION
+# -----------------------------
+
 foreach ($check in $CheckRegistry) {
 
     if ($check.Category -eq "OS") {
@@ -51,7 +65,9 @@ foreach ($check in $CheckRegistry) {
                 $sqlInstance = $name
             }
 
-            $Results += & $check.Function -Server $sqlInstance
+            $Results += & $check.Function `
+                -Server $sqlInstance `
+                -OutputPath $ReportPath
         }
     }
 }

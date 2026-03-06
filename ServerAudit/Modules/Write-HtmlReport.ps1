@@ -118,18 +118,28 @@ $htmlSummary += "</table>"
 $htmlBody = "<h2>Detailed Checks</h2>"
 $htmlBody += "<table>"
 
+# HEADER ROW
+$htmlBody += @"
+<tr>
+<th>Server</th>
+<th>Check</th>
+<th>Status</th>
+<th>Severity</th>
+<th>Message</th>
+<th>Details</th>
+</tr>
+"@
+
 $groupedResults = $Results | Group-Object Server
 
 foreach($server in $groupedResults){
 
     $serverId = $server.Name.Replace("\","_")
 
-    # Server header row (click to expand)
     $htmlBody += "<tr class='serverHeader' onclick=""toggleServer('$serverId')"">"
     $htmlBody += "<td colspan='6'>▶ $($server.Name)</td>"
     $htmlBody += "</tr>"
 
-    # Hidden rows for each check (expand on click)
     foreach($check in $server.Group){
 
         $statusClass = $check.Status.ToLower()
