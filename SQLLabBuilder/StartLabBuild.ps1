@@ -33,8 +33,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptRoot    = $PSScriptRoot
-$SourceISOPath = Join-Path $PSScriptRoot "ISOs"
+$ScriptRoot = $PSScriptRoot
 
 #region Execution Policy Check
 $policy = Get-ExecutionPolicy -Scope Process
@@ -91,6 +90,44 @@ if (-not (Test-Path $configPath)) {
     exit 1
 }
 . $configPath
+#endregion
+
+#region VM utilities — available to all dot-sourced step files
+function Start-LabVMs {
+    param(
+        [string[]]$VMNames,
+        [int]$TimeoutSeconds = 120
+    )
+    if (-not $VMNames -or $VMNames.Count -eq 0) {
+        $VMNames = @($DCVMName, $SQL1VMName, $SQL2VMName)
+    }
+    $toStart = @()
+    foreach ($vmName in $VMNames) {
+        $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
+        if (-not $vm) { Write-Log "[$vmName] VM not found - skipping start." WARN; continue }
+        if ($vm.State -ne 'Running') {
+            Write-Log "[$vmName] VM is '$($vm.State)' - starting..." INFO
+            Start-VM -Name $vmName -ErrorAction Stop
+            $toStart += $vmName
+        }
+    }
+    if ($toStart.Count -eq 0) { return }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $pending  = [System.Collections.Generic.List[string]]$toStart
+    while ($pending.Count -gt 0 -and (Get-Date) -lt $deadline) {
+        $stillPending = @()
+        foreach ($vmName in $pending) {
+            $state = (Get-VM -Name $vmName -ErrorAction SilentlyContinue).State
+            if ($state -eq 'Running') { Write-Log "[$vmName] Running." SUCCESS }
+            else                      { $stillPending += $vmName }
+        }
+        $pending = [System.Collections.Generic.List[string]]$stillPending
+        if ($pending.Count -gt 0) { Start-Sleep -Seconds 5 }
+    }
+    if ($pending.Count -gt 0) {
+        throw "VMs did not reach Running state within $TimeoutSeconds s: $($pending -join ', ')"
+    }
+}
 #endregion
 
 #region Step runner

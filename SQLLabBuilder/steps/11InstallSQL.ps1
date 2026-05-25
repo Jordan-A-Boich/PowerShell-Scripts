@@ -21,6 +21,8 @@ $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIO
 $sqlISOName = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
 $sqlISOHostPath = Join-Path $ISOPath $sqlISOName
 
+Start-LabVMs
+
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-11.done"
 if (Test-Path $cpFile) {
@@ -68,9 +70,16 @@ function Install-SQLOnVM {
     #region Initialize data disk (D:\) inside VM
     Write-Log "[$VMName] Initializing SQL data disk..." INFO
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
-        # Get-Disk CIM objects expose the disk index as .Number (not .DiskNumber)
-        $dataDisk = Get-Disk | Where-Object { $_.OperationalStatus -eq 'Offline' -or
-            ($_.PartitionStyle -eq 'RAW' -and $_.Size -gt 5GB) } | Select-Object -First 1
+
+        # D:\ already exists and formatted from a previous run - nothing to do
+        if (Test-Path "D:\") {
+            Write-Output "D:\ already exists and formatted - skipping initialization."
+            return
+        }
+
+        # Find the data disk: prefer Offline disks, then any RAW secondary disk
+        $dataDisk = Get-Disk | Where-Object { $_.OperationalStatus -eq 'Offline' } |
+            Select-Object -First 1
 
         if (-not $dataDisk) {
             $dataDisk = Get-Disk | Where-Object {
@@ -79,20 +88,35 @@ function Install-SQLOnVM {
         }
 
         if (-not $dataDisk) {
-            Write-Output "No uninitialized data disk found — checking if D:\ already exists."
-            if (Test-Path "D:\") {
-                Write-Output "D:\ already exists and formatted."
-                return
-            }
-            throw "No raw data disk found for SQL data volume."
+            throw "No offline or uninitialized data disk found and D:\ does not exist."
         }
 
         $diskNum = $dataDisk.Number
-        Write-Output "Initializing disk $diskNum..."
-        Initialize-Disk -Number $diskNum -PartitionStyle GPT -PassThru -ErrorAction Stop |
-            New-Partition -DriveLetter D -UseMaximumSize |
+        Write-Output "Found data disk: Number=$diskNum  Size=$([math]::Round($dataDisk.Size/1GB,0)) GB  Status=$($dataDisk.OperationalStatus)  PartitionStyle=$($dataDisk.PartitionStyle)"
+
+        # Bring the disk online before touching it - new VHDX-backed disks arrive Offline
+        if ($dataDisk.IsOffline) {
+            Write-Output "Bringing disk $diskNum online..."
+            Set-Disk -Number $diskNum -IsOffline $false -ErrorAction Stop
+            Set-Disk -Number $diskNum -IsReadOnly $false -ErrorAction Stop
+            Start-Sleep -Seconds 2
+        }
+
+        # Initialize to GPT only if still RAW
+        $partStyle = (Get-Disk -Number $diskNum).PartitionStyle
+        if ($partStyle -eq 'RAW') {
+            Write-Output "Initializing disk $diskNum as GPT..."
+            Initialize-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
+            Start-Sleep -Seconds 1
+        }
+
+        # Create D:\ partition using explicit -DiskNumber (avoids pipeline null issues)
+        Write-Output "Creating partition on disk $diskNum..."
+        New-Partition -DiskNumber $diskNum -DriveLetter D -UseMaximumSize -ErrorAction Stop |
             Format-Volume -FileSystem NTFS -NewFileSystemLabel "SQLData" -Confirm:$false -ErrorAction Stop | Out-Null
+
         Write-Output "Data disk initialized as D:\"
+
     } -ErrorAction Stop | ForEach-Object { Write-Log "[$VMName] $_" INFO }
     #endregion
 

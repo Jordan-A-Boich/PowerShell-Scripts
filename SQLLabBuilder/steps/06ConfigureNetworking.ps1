@@ -14,6 +14,8 @@ IDEMPOTENCY CHECKS:
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+Start-LabVMs
+
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-06.done"
 if (Test-Path $cpFile) {

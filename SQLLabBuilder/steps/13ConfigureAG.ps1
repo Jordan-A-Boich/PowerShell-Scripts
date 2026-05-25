@@ -46,6 +46,8 @@ $invokeLocalSqlDef = {
 }
 #endregion
 
+Start-LabVMs
+
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-13.done"
 if (Test-Path $cpFile) {

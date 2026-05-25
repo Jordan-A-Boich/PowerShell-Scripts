@@ -26,6 +26,8 @@ $ErrorActionPreference = "Stop"
 $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIOSName\Administrator",
                        (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
 
+Start-LabVMs
+
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-14.done"
 if (Test-Path $cpFile) {
