@@ -1,13 +1,19 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Step 05 — Generate unattend.xml answer files and inject into each VM's VHDX.
+    Step 05 — Install Windows Server on each VM VHDX using offline DISM image application.
+    Applies the WIM image directly from the host — no DVD boot required.
 
-IDEMPOTENCY CHECKS:
-    - A marker file is left on each VHDX after injection. The VHDX is mounted,
-      the marker is checked, and injection is skipped if already done.
-    - Checkpoint step-05.done skips the entire step if present and VMs are still off.
-    - VMs must be OFF before injection. The script checks and refuses to mount a live VHDX.
+APPROACH:
+    For each VM's OSDisk.vhdx (VM must be off):
+      1. Mount the VHDX on the host.
+      2. Initialize GPT: EFI (100 MB FAT32) + MSR (128 MB) + Windows (rest, NTFS).
+      3. Apply the WIM with DISM /Apply-Image (index 2 = Standard Desktop Experience).
+      4. Run bcdboot to write UEFI boot files to the EFI partition.
+      5. Inject unattend.xml (specialize + oobeSystem) into \Windows\Panther\.
+      6. Dismount the VHDX.
+    Then remove autounattend helper VHDs, set boot order to HDD, start VMs,
+    and wait for PowerShell Direct readiness.
 #>
 
 Set-StrictMode -Version Latest
@@ -16,7 +22,7 @@ $ErrorActionPreference = "Stop"
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-05.done"
 if (Test-Path $cpFile) {
-    Write-Log "Step 05 checkpoint found — answer files already injected. Skipping." SUCCESS
+    Write-Log "Step 05 checkpoint found — Windows already installed. Skipping." SUCCESS
     return
 }
 #endregion
@@ -25,131 +31,36 @@ if (Test-Path $cpFile) {
 foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
     if ($vm -and $vm.State -ne 'Off') {
-        Write-Log "VM '$vmName' is not off (State: $($vm.State)). Cannot mount VHDX while running." ERROR
-        throw "VM '$vmName' must be Off before answer file injection."
+        Write-Log "Stopping $vmName before VHDX operations..." INFO
+        Stop-VM -Name $vmName -TurnOff -Force -ErrorAction Stop
     }
 }
 #endregion
 
-#region Unattend XML generator
+#region Unattend XML — specialize + oobeSystem only
+# windowsPE pass is intentionally omitted — DISM handles disk partitioning and image apply.
 function New-UnattendXml {
-    param(
-        [string]$ComputerName,
-        [string]$AdminPassword,
-        [string]$ProductKey = ""  # Leave blank for Evaluation (no key needed)
-    )
-
-    $adminPassB64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($AdminPassword + "AdministratorPassword"))
-
-    # No ProductKey element — evaluation ISOs auto-select edition without a key.
-    # Including a key for the wrong edition stalls setup.
-    $xml = @"
+    param([string]$ComputerName, [string]$Password)
+    $passB64 = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($Password + "AdministratorPassword"))
+    return @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="windowsPE">
-    <component name="Microsoft-Windows-International-Core-WinPE"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
-               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-      <SetupUILanguage>
-        <UILanguage>en-US</UILanguage>
-      </SetupUILanguage>
-      <InputLocale>en-US</InputLocale>
-      <SystemLocale>en-US</SystemLocale>
-      <UILanguage>en-US</UILanguage>
-      <UserLocale>en-US</UserLocale>
-    </component>
-    <component name="Microsoft-Windows-Setup"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
-               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
-      <DiskConfiguration>
-        <Disk wcm:action="add">
-          <DiskID>0</DiskID>
-          <WillWipeDisk>true</WillWipeDisk>
-          <CreatePartitions>
-            <CreatePartition wcm:action="add">
-              <Order>1</Order>
-              <Type>EFI</Type>
-              <Size>100</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>2</Order>
-              <Type>MSR</Type>
-              <Size>128</Size>
-            </CreatePartition>
-            <CreatePartition wcm:action="add">
-              <Order>3</Order>
-              <Type>Primary</Type>
-              <Extend>true</Extend>
-            </CreatePartition>
-          </CreatePartitions>
-          <ModifyPartitions>
-            <ModifyPartition wcm:action="add">
-              <Order>1</Order>
-              <PartitionID>1</PartitionID>
-              <Label>System</Label>
-              <Format>FAT32</Format>
-            </ModifyPartition>
-            <ModifyPartition wcm:action="add">
-              <Order>2</Order>
-              <PartitionID>3</PartitionID>
-              <Label>Windows</Label>
-              <Format>NTFS</Format>
-              <Letter>C</Letter>
-            </ModifyPartition>
-          </ModifyPartitions>
-        </Disk>
-      </DiskConfiguration>
-      <ImageInstall>
-        <OSImage>
-          <InstallTo>
-            <DiskID>0</DiskID>
-            <PartitionID>3</PartitionID>
-          </InstallTo>
-          <InstallToAvailablePartition>false</InstallToAvailablePartition>
-          <WillShowUI>Never</WillShowUI>
-          <!-- Index 2 = Windows Server 2025 Standard Desktop Experience -->
-          <OSImageIndex>2</OSImageIndex>
-        </OSImage>
-      </ImageInstall>
-      <UserData>
-        <AcceptEula>true</AcceptEula>
-        <FullName>LabAdmin</FullName>
-        <Organization>SQLLab</Organization>
-      </UserData>
-    </component>
-  </settings>
-
   <settings pass="specialize">
-    <component name="Microsoft-Windows-Shell-Setup"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <ComputerName>$ComputerName</ComputerName>
       <TimeZone>Eastern Standard Time</TimeZone>
-      <RegisteredOwner>LabAdmin</RegisteredOwner>
-      <RegisteredOrganization>SQLLab</RegisteredOrganization>
     </component>
     <component name="Microsoft-Windows-TerminalServices-LocalSessionManager"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
+               processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35"
+               language="neutral" versionScope="nonSxS"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <fDenyTSConnections>false</fDenyTSConnections>
     </component>
-    <component name="Networking-MPSSVC-Svc"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
+    <component name="Networking-MPSSVC-Svc" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <FirewallGroups>
         <FirewallGroup wcm:action="add" wcm:keyValue="RemoteDesktop">
@@ -160,13 +71,9 @@ function New-UnattendXml {
       </FirewallGroups>
     </component>
   </settings>
-
   <settings pass="oobeSystem">
-    <component name="Microsoft-Windows-Shell-Setup"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
@@ -178,17 +85,14 @@ function New-UnattendXml {
         <NetworkLocation>Work</NetworkLocation>
       </OOBE>
       <AutoLogon>
-        <Password>
-          <Value>$adminPassB64</Value>
-          <PlainText>false</PlainText>
-        </Password>
+        <Password><Value>$passB64</Value><PlainText>false</PlainText></Password>
         <Enabled>true</Enabled>
         <LogonCount>1</LogonCount>
         <Username>Administrator</Username>
       </AutoLogon>
       <UserAccounts>
         <AdministratorPassword>
-          <Value>$adminPassB64</Value>
+          <Value>$passB64</Value>
           <PlainText>false</PlainText>
         </AdministratorPassword>
       </UserAccounts>
@@ -200,11 +104,8 @@ function New-UnattendXml {
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>
-    <component name="Microsoft-Windows-International-Core"
-               processorArchitecture="amd64"
-               publicKeyToken="31bf3856ad364e35"
-               language="neutral"
-               versionScope="nonSxS"
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
                xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <InputLocale>en-US</InputLocale>
       <SystemLocale>en-US</SystemLocale>
@@ -214,215 +115,237 @@ function New-UnattendXml {
   </settings>
 </unattend>
 "@
-    return $xml
 }
 #endregion
 
-#region Inject answer file into VHDX
-function Invoke-UnattendInjection {
+#region DISM offline image application
+function Install-WindowsToVHDX {
     param(
         [string]$VMName,
         [string]$ComputerName,
-        [string]$OSDiskPath
+        [string]$OSDiskPath,
+        [string]$WimPath,
+        [int]   $ImageIndex
     )
 
     if (-not (Test-Path $OSDiskPath)) {
-        throw "VHDX not found: $OSDiskPath"
+        throw "[$VMName] OSDisk VHDX not found: $OSDiskPath"
     }
-
-    Write-Log "[$VMName] Generating unattend.xml for computer '$ComputerName'..." INFO
-    $xmlContent = New-UnattendXml -ComputerName $ComputerName -AdminPassword $AdminPassword
 
     Write-Log "[$VMName] Mounting VHDX: $OSDiskPath" INFO
+    Mount-VHD -Path $OSDiskPath -ErrorAction Stop
     try {
-        Mount-VHD -Path $OSDiskPath -ErrorAction Stop
-    } catch {
-        throw "Failed to mount VHDX '$OSDiskPath': $_"
-    }
+        Start-Sleep -Seconds 3
+        $vhd     = Get-VHD -Path $OSDiskPath
+        $diskNum = $vhd.DiskNumber
 
-    try {
-        # Find the mounted Windows volume (largest partition, look for Windows dir)
-        Start-Sleep -Seconds 3  # brief wait for partitions to surface
-        $disk = Get-Disk | Where-Object {
-            $_.Location -like "*$([System.IO.Path]::GetFileName($OSDiskPath))*" -or
-            (Get-VHD -Path $OSDiskPath).Attached -eq $true
-        } | Select-Object -Last 1
-
-        # Fallback: get the VHD disk number
-        $vhd = Get-VHD -Path $OSDiskPath
-        $disk = Get-Disk -Number $vhd.DiskNumber -ErrorAction SilentlyContinue
-
-        if (-not $disk) {
-            throw "Could not find disk object for mounted VHDX."
-        }
-
-        $partitions = Get-Partition -DiskNumber $disk.DiskNumber -ErrorAction SilentlyContinue
-        $windowsPart = $partitions | Where-Object {
-            $_.DriveLetter -and
-            (Test-Path "$($_.DriveLetter):\Windows") -and
-            $_.Type -eq 'Basic'
+        # Check if Windows is already installed (idempotent re-run)
+        $existingParts = Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue
+        $installedPart = $existingParts | Where-Object {
+            $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows\System32\ntoskrnl.exe")
         } | Select-Object -First 1
 
-        if (-not $windowsPart) {
-            # The disk was freshly created and not yet formatted — no Windows directory
-            # This is expected on first run: inject into the EFI/Windows partition path
-            # The unattend.xml needs to go to \Windows\Panther\unattend.xml or just
-            # leave it in the root to be picked up by Windows setup
-            $windowsPart = $partitions | Where-Object {
-                $_.DriveLetter -and $_.Type -ne 'System'
-            } | Select-Object -First 1
-        }
-
-        if (-not $windowsPart -or -not $windowsPart.DriveLetter) {
-            # Disk is not yet partitioned / formatted — can't inject yet.
-            # The answer file approach requires a pre-existing Windows volume or EFI.
-            # For a fresh VHDX, we'll use the autounattend.xml approach at the ISO level,
-            # but since we can't modify the ISO, we'll note this limitation and rely on
-            # the DVD autounattend path instead.
-            Write-Log "[$VMName] VHDX has no formatted Windows partition yet. Saving autounattend.xml alongside VHDX for manual placement." WARN
-            $xmlPath = [System.IO.Path]::ChangeExtension($OSDiskPath, ".autounattend.xml")
-            $xmlContent | Set-Content -Path $xmlPath -Encoding UTF8
-            Write-Log "[$VMName] Answer file saved to: $xmlPath" WARN
-            Write-Log "[$VMName] NOTE: For fully unattended setup, the answer file must be on removable media or in a floppy image." WARN
+        if ($installedPart) {
+            Write-Log "[$VMName] Windows already present on disk — skipping DISM." SUCCESS
+            $pantherPath = "$($installedPart.DriveLetter):\Windows\Panther"
+            if (-not (Test-Path "$pantherPath\unattend.xml")) {
+                New-Item -ItemType Directory -Path $pantherPath -Force | Out-Null
+                (New-UnattendXml -ComputerName $ComputerName -Password $AdminPassword) |
+                    Set-Content -Path "$pantherPath\unattend.xml" -Encoding UTF8
+                Write-Log "[$VMName] Injected missing unattend.xml." INFO
+            }
             return
         }
 
-        $driveLetter = $windowsPart.DriveLetter
-        $pantherPath = "${driveLetter}:\Windows\Panther"
-        $unattendDest = "${driveLetter}:\Windows\Panther\unattend.xml"
+        # Partition the disk (GPT) — skip if already partitioned (e.g. prior failed run)
+        $existingGPT = Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue |
+                       Where-Object { $_.Type -ne 'Unknown' }
 
-        $markerPath = "${driveLetter}:\SQLLabBuilder-unattend.marker"
-        if (Test-Path $markerPath) {
-            Write-Log "[$VMName] Unattend marker found — already injected. Skipping." INFO
-            return
+        if ($existingGPT) {
+            Write-Log "[$VMName] Disk $diskNum already has partitions — reusing existing layout." WARN
+            # Find EFI (FAT32) and Windows (NTFS) partitions by filesystem label or size
+            $allParts = Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue
+            $efiPart  = $allParts | Where-Object { $_.Size -le 200MB -and $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } | Select-Object -First 1
+            $winPart  = $allParts | Where-Object { $_.GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' } | Select-Object -First 1
+
+            if (-not $efiPart -or -not $winPart) {
+                # Can't identify expected layout — wipe and repartition
+                Write-Log "[$VMName] Cannot identify EFI/Windows partitions — clearing disk and re-partitioning." WARN
+                Clear-Disk -Number $diskNum -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop
+                Initialize-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
+                $efiPart = $null; $winPart = $null
+            }
+        } else {
+            Write-Log "[$VMName] Initializing GPT partitions on disk $diskNum..." INFO
+            Initialize-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
+            $efiPart = $null; $winPart = $null
         }
 
-        if (-not (Test-Path $pantherPath)) {
-            New-Item -ItemType Directory -Path $pantherPath -Force | Out-Null
+        if (-not $efiPart) {
+            $efiPart = New-Partition -DiskNumber $diskNum `
+                -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -Size 100MB
+            Format-Volume -Partition $efiPart -FileSystem FAT32 `
+                -NewFileSystemLabel "System" -Confirm:$false | Out-Null
         }
 
-        Write-Log "[$VMName] Writing unattend.xml to $unattendDest" INFO
-        $xmlContent | Set-Content -Path $unattendDest -Encoding UTF8
-        "injected" | Set-Content -Path $markerPath -Encoding ASCII
+        if (-not (Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue |
+                  Where-Object { $_.GptType -eq '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' })) {
+            New-Partition -DiskNumber $diskNum `
+                -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -Size 128MB | Out-Null
+        }
 
-        Write-Log "[$VMName] Answer file injected successfully." SUCCESS
+        if (-not $winPart) {
+            $winPart = New-Partition -DiskNumber $diskNum -UseMaximumSize
+            Format-Volume -Partition $winPart -FileSystem NTFS `
+                -NewFileSystemLabel "Windows" -Confirm:$false | Out-Null
+        }
+
+        # Assign drive letters if not already assigned
+        if (-not (Get-Partition -DiskNumber $diskNum -PartitionNumber $efiPart.PartitionNumber).DriveLetter) {
+            $efiPart | Add-PartitionAccessPath -AssignDriveLetter | Out-Null
+        }
+        if (-not (Get-Partition -DiskNumber $diskNum -PartitionNumber $winPart.PartitionNumber).DriveLetter) {
+            $winPart | Add-PartitionAccessPath -AssignDriveLetter | Out-Null
+        }
+        Start-Sleep -Seconds 3
+
+        $efiDrive = (Get-Partition -DiskNumber $diskNum -PartitionNumber $efiPart.PartitionNumber).DriveLetter
+        $winDrive = (Get-Partition -DiskNumber $diskNum -PartitionNumber $winPart.PartitionNumber).DriveLetter
+
+        if (-not $efiDrive -or -not $winDrive) {
+            throw "[$VMName] Could not obtain drive letters. EFI='$efiDrive' Win='$winDrive'"
+        }
+        Write-Log "[$VMName] EFI=${efiDrive}: Windows=${winDrive}:" INFO
+
+        # Apply WIM image
+        Write-Log "[$VMName] Applying Windows image (WIM index $ImageIndex) — 5 to 15 minutes..." INFO
+        $dismLog = Join-Path $LogPath "dism-${VMName}.log"
+        $proc = Start-Process dism.exe -ArgumentList @(
+            "/Apply-Image",
+            "/ImageFile:$WimPath",
+            "/Index:$ImageIndex",
+            "/ApplyDir:${winDrive}:\",
+            "/LogPath:$dismLog"
+        ) -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            throw "[$VMName] DISM failed (exit $($proc.ExitCode)). Log: $dismLog"
+        }
+        Write-Log "[$VMName] DISM image applied successfully." SUCCESS
+
+        # Create UEFI boot configuration
+        Write-Log "[$VMName] Running bcdboot to write UEFI boot files to ${efiDrive}:..." INFO
+        $bcd = Start-Process bcdboot.exe -ArgumentList @(
+            "${winDrive}:\Windows",
+            "/s", "${efiDrive}:",
+            "/f", "UEFI",
+            "/l", "en-US"
+        ) -Wait -PassThru -NoNewWindow
+        if ($bcd.ExitCode -ne 0) {
+            throw "[$VMName] bcdboot failed (exit $($bcd.ExitCode))."
+        }
+        Write-Log "[$VMName] UEFI boot files written." SUCCESS
+
+        # Inject unattend.xml for specialize and OOBE passes
+        $pantherPath = "${winDrive}:\Windows\Panther"
+        New-Item -ItemType Directory -Path $pantherPath -Force | Out-Null
+        (New-UnattendXml -ComputerName $ComputerName -Password $AdminPassword) |
+            Set-Content -Path "$pantherPath\unattend.xml" -Encoding UTF8
+        Write-Log "[$VMName] unattend.xml injected to $pantherPath." SUCCESS
 
     } finally {
-        Write-Log "[$VMName] Dismounting VHDX..." INFO
         Dismount-VHD -Path $OSDiskPath -ErrorAction SilentlyContinue
         Write-Log "[$VMName] VHDX dismounted." INFO
     }
 }
 #endregion
 
-#region Create floppy-image-based autounattend approach for fresh VHDXs
-# Since fresh VHDXs have no Windows partition yet, we create a small VHD acting as
-# a virtual floppy to carry autounattend.xml, then attach it to each VM.
-# Windows Setup will find autounattend.xml on any attached disk automatically.
+#region Mount ISO and apply Windows to all VMs
+$winISOPath = Join-Path $ISOPath $WinServerISOName
+Write-Log "Mounting Windows Server ISO: $winISOPath" INFO
+$isoImage    = Mount-DiskImage -ImagePath $winISOPath -PassThru -ErrorAction Stop
+$isoDriveLet = ($isoImage | Get-Volume).DriveLetter
 
-function New-AutounattendFloppy {
-    param(
-        [string]$VMName,
-        [string]$ComputerName,
-        [string]$VMFolder
-    )
-
-    $floppyPath = Join-Path $VMFolder "autounattend.vhd"
-    $xmlContent = New-UnattendXml -ComputerName $ComputerName -AdminPassword $AdminPassword
-
-    if (Test-Path $floppyPath) {
-        Write-Log "[$VMName] Autounattend floppy already exists: $floppyPath" INFO
-    } else {
-        Write-Log "[$VMName] Creating 10 MB autounattend VHD..." INFO
-        New-VHD -Path $floppyPath -SizeBytes 10MB -Fixed -ErrorAction Stop | Out-Null
-        Mount-VHD -Path $floppyPath -ErrorAction Stop
-
-        try {
-            Start-Sleep -Seconds 2
-            $vhd       = Get-VHD -Path $floppyPath
-            $diskNum   = $vhd.DiskNumber
-            Initialize-Disk -Number $diskNum -PartitionStyle MBR -ErrorAction Stop
-            $part = New-Partition -DiskNumber $diskNum -UseMaximumSize -IsActive -AssignDriveLetter -ErrorAction Stop
-            Format-Volume -DriveLetter $part.DriveLetter -FileSystem FAT -NewFileSystemLabel "UNATTEND" -Confirm:$false -ErrorAction Stop
-
-            $xmlContent | Set-Content -Path "$($part.DriveLetter):\autounattend.xml" -Encoding UTF8
-            Write-Log "[$VMName] Wrote autounattend.xml to VHD drive $($part.DriveLetter):\" SUCCESS
-        } finally {
-            Dismount-VHD -Path $floppyPath -ErrorAction SilentlyContinue
-        }
-    }
-
-    # Attach to VM as an additional disk (Windows Setup scans all disks)
-    $existingDisks = Get-VMHardDiskDrive -VMName $VMName | Where-Object { $_.Path -eq $floppyPath }
-    if (-not $existingDisks) {
-        Add-VMHardDiskDrive -VMName $VMName -Path $floppyPath -ControllerType SCSI -ErrorAction Stop
-        Write-Log "[$VMName] Attached autounattend VHD to VM." SUCCESS
-    } else {
-        Write-Log "[$VMName] Autounattend VHD already attached." INFO
+$wimPath = "${isoDriveLet}:\sources\install.wim"
+if (-not (Test-Path $wimPath)) {
+    $wimPath = "${isoDriveLet}:\sources\install.esd"
+    if (-not (Test-Path $wimPath)) {
+        Dismount-DiskImage -ImagePath $winISOPath | Out-Null
+        throw "install.wim / install.esd not found on ISO at ${isoDriveLet}:\sources\"
     }
 }
-#endregion
+Write-Log "WIM source: $wimPath" INFO
 
-#region Process each VM
 $vmConfigs = @(
     @{ VMName = $DCVMName;   ComputerName = $DCComputerName   }
     @{ VMName = $SQL1VMName; ComputerName = $SQL1ComputerName }
     @{ VMName = $SQL2VMName; ComputerName = $SQL2ComputerName }
 )
 
-foreach ($cfg in $vmConfigs) {
-    Write-Log "Processing unattend setup for $($cfg.VMName)..." INFO
-
-    $vmFolder   = Join-Path $VMPath $cfg.VMName
-    $osDiskPath = Join-Path $vmFolder "OSDisk.vhdx"
-
-    New-AutounattendFloppy `
-        -VMName       $cfg.VMName `
-        -ComputerName $cfg.ComputerName `
-        -VMFolder     $vmFolder
+try {
+    foreach ($cfg in $vmConfigs) {
+        $osDiskPath = Join-Path $VMPath "$($cfg.VMName)\OSDisk.vhdx"
+        Install-WindowsToVHDX `
+            -VMName       $cfg.VMName `
+            -ComputerName $cfg.ComputerName `
+            -OSDiskPath   $osDiskPath `
+            -WimPath      $wimPath `
+            -ImageIndex   2
+    }
+} finally {
+    Write-Log "Dismounting Windows Server ISO..." INFO
+    Dismount-DiskImage -ImagePath $winISOPath -ErrorAction SilentlyContinue
 }
 #endregion
 
-#region Start VMs
-Write-Log "Starting all VMs for unattended Windows installation..." INFO
-Write-Log "This process typically takes 15–30 minutes. The script will poll for completion." INFO
-
+#region Remove autounattend helper VHDs and fix VM boot order
 foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
-    $vm = Get-VM -Name $vmName
-    if ($vm.State -eq 'Off') {
-        Write-Log "Starting VM: $vmName" INFO
+    $floppies = Get-VMHardDiskDrive -VMName $vmName |
+                Where-Object { $_.Path -like "*autounattend*" }
+    foreach ($f in $floppies) {
+        Remove-VMHardDiskDrive -VMName $vmName `
+            -ControllerType     $f.ControllerType `
+            -ControllerNumber   $f.ControllerNumber `
+            -ControllerLocation $f.ControllerLocation -ErrorAction Stop
+        Write-Log "[$vmName] Removed autounattend VHD from VM." INFO
+    }
+
+    # HDD first — Windows is pre-installed on the OS disk via DISM
+    $hardDisk = Get-VMHardDiskDrive -VMName $vmName | Select-Object -First 1
+    $network  = Get-VMNetworkAdapter -VMName $vmName
+    Set-VMFirmware -VMName $vmName -BootOrder $hardDisk, $network -ErrorAction Stop
+
+    # MicrosoftWindows Secure Boot template is correct for a DISM-installed OS
+    Set-VMFirmware -VMName $vmName `
+        -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows -ErrorAction Stop
+
+    Write-Log "[$vmName] Boot order and Secure Boot configured." INFO
+}
+#endregion
+
+#region Start VMs and wait for PowerShell Direct
+Write-Log "Starting all VMs..." INFO
+foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
+    if ((Get-VM -Name $vmName).State -eq 'Off') {
         Start-VM -Name $vmName -ErrorAction Stop
-        Write-Log "VM started: $vmName" SUCCESS
-    } else {
-        Write-Log "VM $vmName is already running (State: $($vm.State))." INFO
+        Write-Log "Started: $vmName" SUCCESS
     }
 }
-#endregion
 
-#region Poll for Windows setup completion (Guest Integration Services heartbeat)
 function Wait-VMReady {
-    param(
-        [string]$VMName,
-        [int]$TimeoutMinutes = 45
-    )
-    $cred       = New-Object System.Management.Automation.PSCredential("Administrator",
-                      (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
-    $deadline   = (Get-Date).AddMinutes($TimeoutMinutes)
-    $pollSecs   = 10
-
-    Write-Log "[$VMName] Waiting for Windows setup to complete and PowerShell Direct to become available..." INFO
-
+    param([string]$VMName, [int]$TimeoutMinutes = 45)
+    $cred     = New-Object System.Management.Automation.PSCredential("Administrator",
+                    (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    Write-Log "[$VMName] Waiting for specialize/OOBE and PowerShell Direct..." INFO
     while ((Get-Date) -lt $deadline) {
         try {
-            $result = Invoke-Command -VMName $VMName -Credential $cred -ScriptBlock {
-                $os = Get-WmiObject Win32_OperatingSystem
-                return @{ Caption = $os.Caption; Status = "Ready" }
+            $caption = Invoke-Command -VMName $VMName -Credential $cred -ScriptBlock {
+                (Get-WmiObject Win32_OperatingSystem).Caption
             } -ErrorAction Stop
-            Write-Log "[$VMName] OS ready: $($result.Caption)" SUCCESS
-            return $true
+            Write-Log "[$VMName] Ready: $caption" SUCCESS
+            return
         } catch {
-            Write-Log "[$VMName] Not ready yet — retrying in $pollSecs s..." INFO
-            Start-Sleep -Seconds $pollSecs
+            Start-Sleep -Seconds 15
         }
     }
     throw "[$VMName] Timed out after $TimeoutMinutes minutes waiting for OS readiness."
@@ -438,4 +361,4 @@ New-Item -ItemType File -Path $cpFile -Force | Out-Null
 Write-Log "Checkpoint written: step-05.done" SUCCESS
 #endregion
 
-Write-Log "Unattended Windows setup complete on all VMs." SUCCESS
+Write-Log "Windows Server installed on all VMs via DISM offline application." SUCCESS

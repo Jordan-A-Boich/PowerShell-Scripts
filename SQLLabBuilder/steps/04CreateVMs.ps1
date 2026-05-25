@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 04 — Create Hyper-V virtual machines.
@@ -26,12 +26,6 @@ if (Test-Path $cpFile) {
     Write-Log "Step 04 checkpoint found but VMs missing — re-running." WARN
 }
 #endregion
-
-$winISO = Join-Path $ISOPath $WinServerISOName
-
-if (-not (Test-Path $winISO)) {
-    throw "Windows Server ISO not found at: $winISO. Run step 02 first."
-}
 
 #region VM creation helper
 function New-LabVM {
@@ -96,25 +90,16 @@ function New-LabVM {
         # vCPUs
         Set-VMProcessor -VMName $VMName -Count 2 -ErrorAction Stop
 
-        # Secure Boot (MicrosoftWindows template — required for Gen 2 Windows VMs)
+        # MicrosoftWindows template — correct for DISM-applied Windows installations
         Set-VMFirmware -VMName $VMName `
             -EnableSecureBoot On `
             -SecureBootTemplate MicrosoftWindows `
             -ErrorAction Stop
 
-        # Attach DVD drive with Windows Server ISO
-        $dvd = Get-VMDvdDrive -VMName $VMName -ErrorAction SilentlyContinue
-        if (-not $dvd) {
-            Add-VMDvdDrive -VMName $VMName -Path $winISO -ErrorAction Stop
-        } else {
-            Set-VMDvdDrive -VMName $VMName -Path $winISO -ErrorAction Stop
-        }
-
-        # Boot order: DVD first so unattended install proceeds
-        $dvdDrive    = Get-VMDvdDrive  -VMName $VMName
-        $networkBoot = Get-VMNetworkAdapter -VMName $VMName
+        # Boot order: OS disk first — Windows is applied offline by step 05 (DISM)
         $hardDisk    = Get-VMHardDiskDrive -VMName $VMName | Select-Object -First 1
-        Set-VMFirmware -VMName $VMName -BootOrder $dvdDrive, $hardDisk, $networkBoot -ErrorAction Stop
+        $networkBoot = Get-VMNetworkAdapter -VMName $VMName
+        Set-VMFirmware -VMName $VMName -BootOrder $hardDisk, $networkBoot -ErrorAction Stop
 
         # Attach data disk for SQL VMs
         if ($AddDataDisk) {

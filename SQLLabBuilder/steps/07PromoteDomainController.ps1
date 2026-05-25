@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 07 — Promote SQLLAB-DC to a domain controller for sqllab.local.
@@ -13,18 +13,29 @@ IDEMPOTENCY CHECKS:
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$adminCred = New-Object System.Management.Automation.PSCredential("Administrator",
-                 (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+$adminCred       = New-Object System.Management.Automation.PSCredential("Administrator",
+                       (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+$domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIOSName\Administrator",
+                       (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
 
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-07.done"
 if (Test-Path $cpFile) {
+    # If any later step completed, DC promotion definitely worked — skip without PS Direct check
+    $laterDone = @("step-08.done","step-09.done","step-10.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 07 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 07 checkpoint found — verifying DC readiness..." INFO
     try {
-        $domain = Invoke-Command -VMName $DCVMName -Credential $adminCred -ScriptBlock {
-            (Get-ADDomain).DNSRoot
+        $domain = Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
+            Import-Module ActiveDirectory -ErrorAction Stop
+            (Get-ADDomain -ErrorAction Stop).DNSRoot
         } -ErrorAction Stop
-        if ($domain -eq $using:DomainName) {
+        if ($domain -eq $DomainName) {
             Write-Log "DC verified — domain $domain is healthy. Skipping step 07." SUCCESS
             return
         }

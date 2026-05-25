@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 06 — Configure static IP addresses inside each VM via PowerShell Direct.
@@ -17,32 +17,42 @@ $ErrorActionPreference = "Stop"
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-06.done"
 if (Test-Path $cpFile) {
+    # If any later step completed, step 06 definitely worked — no need to re-verify via PS Direct
+    $laterDone = @("step-07.done","step-08.done","step-09.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 06 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 06 checkpoint found — verifying network config..." INFO
-    $allOK = $true
-    $cred  = New-Object System.Management.Automation.PSCredential("Administrator",
-                 (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+    $allOK    = $true
+    $localCred = New-Object System.Management.Automation.PSCredential("Administrator",
+                    (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
     foreach ($pair in @(
         @{ VM = $DCVMName;   IP = $DCStaticIP   }
         @{ VM = $SQL1VMName; IP = $SQL1StaticIP }
         @{ VM = $SQL2VMName; IP = $SQL2StaticIP }
     )) {
         try {
-            $ip = Invoke-Command -VMName $pair.VM -Credential $cred -ScriptBlock {
-                (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress
+            $ips = Invoke-Command -VMName $pair.VM -Credential $localCred -ScriptBlock {
+                (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
             } -ErrorAction Stop
-            if ($ip -ne $pair.IP) { $allOK = $false }
+            if ($ips -notcontains $pair.IP) { $allOK = $false }
         } catch { $allOK = $false }
     }
     if ($allOK) {
         Write-Log "All VMs have correct IPs — skipping step 06." SUCCESS
         return
     }
-    Write-Log "Checkpoint present but IPs differ — re-running." WARN
+    Write-Log "Checkpoint present but IP verification inconclusive — re-running step 06." WARN
 }
 #endregion
 
-$adminCred = New-Object System.Management.Automation.PSCredential("Administrator",
-                 (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+$adminCred       = New-Object System.Management.Automation.PSCredential("Administrator",
+                       (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
+$domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIOSName\Administrator",
+                       (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
 
 #region Configure networking helper
 function Set-VMStaticIP {
@@ -100,24 +110,30 @@ function Set-VMStaticIP {
 
 #region Wait for VM readiness
 function Wait-VMNetworkReady {
-    param([string]$VMName, [System.Management.Automation.PSCredential]$Credential, [int]$TimeoutMinutes = 10)
-    $deadline  = (Get-Date).AddMinutes($TimeoutMinutes)
-    $pollSecs  = 10
+    param(
+        [string]$VMName,
+        [System.Management.Automation.PSCredential]$Credential,
+        [System.Management.Automation.PSCredential]$FallbackCredential = $null,
+        [int]$TimeoutMinutes = 10
+    )
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $pollSecs = 10
     while ((Get-Date) -lt $deadline) {
-        try {
-            Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock { $true } -ErrorAction Stop | Out-Null
-            return
-        } catch {
-            Write-Log "[$VMName] Waiting for PowerShell Direct connectivity..." INFO
-            Start-Sleep -Seconds $pollSecs
+        foreach ($cred in @($Credential, $FallbackCredential) | Where-Object { $_ }) {
+            try {
+                Invoke-Command -VMName $VMName -Credential $cred -ScriptBlock { $true } -ErrorAction Stop | Out-Null
+                return
+            } catch { }
         }
+        Write-Log "[$VMName] Waiting for PowerShell Direct connectivity..." INFO
+        Start-Sleep -Seconds $pollSecs
     }
     throw "[$VMName] PowerShell Direct not available after $TimeoutMinutes minutes."
 }
 #endregion
 
 foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
-    Wait-VMNetworkReady -VMName $vmName -Credential $adminCred
+    Wait-VMNetworkReady -VMName $vmName -Credential $adminCred -FallbackCredential $domainAdminCred
 }
 
 Set-VMStaticIP -VMName $DCVMName   -StaticIP $DCStaticIP   -PrefixLen $LabPrefix -GW $Gateway -DNSPrimary "127.0.0.1"   -Credential $adminCred
@@ -155,7 +171,7 @@ foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
 Start-Sleep -Seconds 15
 
 foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
-    Wait-VMNetworkReady -VMName $vmName -Credential $adminCred -TimeoutMinutes 10
+    Wait-VMNetworkReady -VMName $vmName -Credential $adminCred -FallbackCredential $domainAdminCred -TimeoutMinutes 10
     Write-Log "[$vmName] Back online after network reboot." SUCCESS
 }
 #endregion

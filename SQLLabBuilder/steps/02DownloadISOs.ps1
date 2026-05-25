@@ -1,13 +1,18 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Step 02 — ISO download.
+    Step 02 — Copy ISOs from the SQLLabBuilder\ISOs source folder to the lab drive.
 
 IDEMPOTENCY CHECKS:
-    - Each ISO file is downloaded only if it does not already exist at $ISOPath.
-    - File size is verified after download. If the file exists and has non-zero size,
-      the download is skipped.
+    - Each ISO is copied only if the destination does not already exist with matching size.
     - Checkpoint step-02.done skips the entire step if all expected ISOs are present.
+
+SOURCE:
+    ISOs are read from $SourceISOPath (SQLLabBuilder\ISOs\ in the script directory).
+    Expected files:
+        WinServer2025.iso
+        SQLServer2022-eval.iso   (if -SqlVersion 2022)
+        SQLServer2025-eval.iso   (if -SqlVersion 2025)
 #>
 
 Set-StrictMode -Version Latest
@@ -23,91 +28,70 @@ if (Test-Path $cpFile) {
         $isoFullPath = Join-Path $ISOPath $isoFile
         if (-not (Test-Path $isoFullPath) -or (Get-Item $isoFullPath).Length -eq 0) {
             $missingISO = $true
-            Write-Log "Missing ISO: $isoFullPath — will re-download." WARN
+            Write-Log "Missing ISO: $isoFullPath — will re-copy." WARN
         }
     }
     if (-not $missingISO) {
-        Write-Log "All ISOs present — skipping download." SUCCESS
+        Write-Log "All ISOs present — skipping copy." SUCCESS
         return
     }
 }
 #endregion
 
-#region Download helper with retry
-function Invoke-ISODownload {
-    param(
-        [string]$Url,
-        [string]$Destination,
-        [string]$DisplayName
-    )
-
-    if (Test-Path $Destination) {
-        $existingSize = (Get-Item $Destination).Length
-        if ($existingSize -gt 100MB) {
-            Write-Log "$DisplayName already exists ($([math]::Round($existingSize/1GB,2)) GB) — skipping download." SUCCESS
-            return
-        } else {
-            Write-Log "$DisplayName exists but appears incomplete ($existingSize bytes) — re-downloading." WARN
-            Remove-Item $Destination -Force
-        }
-    }
-
-    $maxAttempts = 3
-    $waitSeconds = 10
-
-    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-        Write-Log "Downloading $DisplayName (attempt $attempt/$maxAttempts)..." INFO
-        Write-Log "Source URL: $Url" INFO
-        Write-Log "Destination: $Destination" INFO
-        try {
-            Start-BitsTransfer -Source $Url -Destination $Destination -DisplayName $DisplayName -ErrorAction Stop
-            $downloadedSize = (Get-Item $Destination).Length
-            if ($downloadedSize -lt 100MB) {
-                throw "Downloaded file is unexpectedly small ($downloadedSize bytes) — likely a redirect/error page."
-            }
-            Write-Log "$DisplayName downloaded successfully. Size: $([math]::Round($downloadedSize/1GB,2)) GB" SUCCESS
-            return
-        } catch {
-            Write-Log "Download attempt $attempt failed: $_" WARN
-            if (Test-Path $Destination) { Remove-Item $Destination -Force -ErrorAction SilentlyContinue }
-            if ($attempt -lt $maxAttempts) {
-                Write-Log "Waiting $waitSeconds seconds before retry..." INFO
-                Start-Sleep -Seconds $waitSeconds
-                $waitSeconds *= 2
-            }
-        }
-    }
-
-    Write-Log "All $maxAttempts download attempts failed for $DisplayName." ERROR
-    Write-Log "Manual recovery steps:" ERROR
-    Write-Log "  1. Download the ISO manually from the evaluation center." ERROR
-    Write-Log "  2. Place it at: $Destination" ERROR
-    Write-Log "  3. Re-run Start-LabBuild.ps1" ERROR
-    throw "ISO download failed: $DisplayName"
+#region Validate source folder
+if (-not $SourceISOPath -or -not (Test-Path $SourceISOPath)) {
+    throw "Source ISO folder not found: '$SourceISOPath'. Ensure the ISOs\ folder exists in the SQLLabBuilder directory."
 }
+Write-Log "Source ISO folder: $SourceISOPath" INFO
 #endregion
 
 if (-not (Test-Path $ISOPath)) {
     New-Item -ItemType Directory -Path $ISOPath -Force | Out-Null
 }
 
-#region Windows Server 2025 ISO
-$winISOPath = Join-Path $ISOPath $WinServerISOName
-Invoke-ISODownload `
-    -Url         $WinServerISOUrl `
-    -Destination $winISOPath `
-    -DisplayName "Windows Server 2025 Evaluation"
+#region Copy helper
+function Copy-ISO {
+    param(
+        [string]$SourceDir,
+        [string]$FileName,
+        [string]$DestDir,
+        [string]$DisplayName
+    )
+
+    $srcPath  = Join-Path $SourceDir $FileName
+    $destPath = Join-Path $DestDir   $FileName
+
+    if (-not (Test-Path $srcPath)) {
+        throw "Source ISO not found: $srcPath`nPlace '$FileName' in the ISOs\ folder alongside StartLabBuild.ps1."
+    }
+
+    $srcSize = (Get-Item $srcPath).Length
+
+    if (Test-Path $destPath) {
+        $destSize = (Get-Item $destPath).Length
+        if ($destSize -eq $srcSize) {
+            Write-Log "$DisplayName already at destination ($([math]::Round($destSize/1GB,2)) GB) — skipping." SUCCESS
+            return
+        }
+        Write-Log "$DisplayName at destination has wrong size ($destSize vs $srcSize bytes) — re-copying." WARN
+        Remove-Item $destPath -Force
+    }
+
+    Write-Log "Copying $DisplayName ($([math]::Round($srcSize/1GB,2)) GB)..." INFO
+    Write-Log "  From: $srcPath" INFO
+    Write-Log "  To:   $destPath" INFO
+    Copy-Item -Path $srcPath -Destination $destPath -ErrorAction Stop
+    Write-Log "$DisplayName copied successfully." SUCCESS
+}
 #endregion
 
-#region SQL Server ISO
-$sqlISOName = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
-$sqlISOUrl  = if ($global:SQLVersion -eq "2025") { $SQL2025ISOUrl  } else { $SQL2022ISOUrl  }
-$sqlISOPath = Join-Path $ISOPath $sqlISOName
+#region Copy Windows Server ISO
+Copy-ISO -SourceDir $SourceISOPath -FileName $WinServerISOName -DestDir $ISOPath -DisplayName "Windows Server 2025"
+#endregion
 
-Invoke-ISODownload `
-    -Url         $sqlISOUrl `
-    -Destination $sqlISOPath `
-    -DisplayName "SQL Server $($global:SQLVersion) Evaluation"
+#region Copy SQL Server ISO
+$sqlISOName = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
+Copy-ISO -SourceDir $SourceISOPath -FileName $sqlISOName -DestDir $ISOPath -DisplayName "SQL Server $($global:SQLVersion)"
 #endregion
 
 #region Checkpoint
@@ -115,4 +99,4 @@ New-Item -ItemType File -Path $cpFile -Force | Out-Null
 Write-Log "Checkpoint written: step-02.done" SUCCESS
 #endregion
 
-Write-Log "ISO download step complete." SUCCESS
+Write-Log "ISO copy step complete." SUCCESS

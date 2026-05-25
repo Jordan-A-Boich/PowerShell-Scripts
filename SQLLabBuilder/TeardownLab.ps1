@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQLLabBuilder — Full lab teardown.
@@ -227,7 +227,7 @@ Write-Log "Removing lab firewall rules..." INFO
         try {
             Remove-NetFirewallRule -DisplayName $_ -ErrorAction Stop
             Write-Log "Removed firewall rule: $_" SUCCESS
-        } catch { Write-Log "Error removing firewall rule $_: $($Error[0])" WARN }
+        } catch { Write-Log "Error removing firewall rule $($_): $($Error[0])" WARN }
     } else {
         Write-Log "Firewall rule '$_' not found — skipping" WARN
     }

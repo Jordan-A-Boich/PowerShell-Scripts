@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQLLabBuilder — Main entry point.
@@ -33,7 +33,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptRoot = $PSScriptRoot
+$ScriptRoot    = $PSScriptRoot
+$SourceISOPath = Join-Path $PSScriptRoot "ISOs"
 
 #region Execution Policy Check
 $policy = Get-ExecutionPolicy -Scope Process
@@ -133,13 +134,13 @@ Write-Log "Script root: $ScriptRoot" INFO
 $global:SQLVersion = $SQLVersion
 
 try {
-    Invoke-Step "00-Preflight.ps1"      "00 — Preflight checks"
+    Invoke-Step "00Preflight.ps1"      "00 — Preflight checks"
     # Re-dot-source config after preflight (passwords may have been written)
     . $configPath
 
     # Now that LabRoot is set (by 01-SelectDrive inside 00-Preflight or standalone),
     # initialize the log file
-    Invoke-Step "01-SelectDrive.ps1"    "01 — Drive selection"
+    Invoke-Step "01SelectDrive.ps1"    "01 — Drive selection"
     . $configPath   # pick up LabRoot, LogPath etc. written by step 01
 
     # Create log directory and open log file
@@ -152,20 +153,20 @@ try {
     # Re-source config one more time so LogPath etc. are in scope for all subsequent steps
     . $configPath
 
-    Invoke-Step "02-DownloadISOs.ps1"              "02 — Download ISOs"
-    Invoke-Step "03-CreateVMSwitch.ps1"            "03 — Create VM switch & NAT"
-    Invoke-Step "04-CreateVMs.ps1"                 "04 — Create virtual machines"
-    Invoke-Step "05-UnattendedWindowsSetup.ps1"    "05 — Inject unattended answer files"
-    Invoke-Step "06-ConfigureNetworking.ps1"       "06 — Configure guest networking"
-    Invoke-Step "07-PromoteDomainController.ps1"   "07 — Promote domain controller"
-    Invoke-Step "08-JoinDomainMembers.ps1"         "08 — Join SQL nodes to domain"
-    Invoke-Step "09-CreateCluster.ps1"             "09 — Create Windows Failover Cluster"
-    Invoke-Step "10-CreateSQLServiceAccount.ps1"   "10 — Create SQL service account"
-    Invoke-Step "11-InstallSQL.ps1"                "11 — Install SQL Server"
-    Invoke-Step "12-EnableAGFeature.ps1"           "12 — Enable Always On feature"
-    Invoke-Step "13-ConfigureAG.ps1"               "13 — Configure Availability Group"
-    Invoke-Step "14-ConfigureHostAccess.ps1"       "14 — Configure host SSMS access"
-    Invoke-Step "15-SummaryReport.ps1"             "15 — Generate summary report"
+    Invoke-Step "02DownloadISOs.ps1"              "02 — Download ISOs"
+    Invoke-Step "03CreateVMSwitch.ps1"            "03 — Create VM switch & NAT"
+    Invoke-Step "04CreateVMs.ps1"                 "04 — Create virtual machines"
+    Invoke-Step "05UnattendedWindowsSetup.ps1"    "05 — Inject unattended answer files"
+    Invoke-Step "06ConfigureNetworking.ps1"       "06 — Configure guest networking"
+    Invoke-Step "07PromoteDomainController.ps1"   "07 — Promote domain controller"
+    Invoke-Step "08JoinDomainMembers.ps1"         "08 — Join SQL nodes to domain"
+    Invoke-Step "09CreateCluster.ps1"             "09 — Create Windows Failover Cluster"
+    Invoke-Step "10CreateSQLServiceAccount.ps1"   "10 — Create SQL service account"
+    Invoke-Step "11InstallSQL.ps1"                "11 — Install SQL Server"
+    Invoke-Step "12EnableAGFeature.ps1"           "12 — Enable Always On feature"
+    Invoke-Step "13ConfigureAG.ps1"               "13 — Configure Availability Group"
+    Invoke-Step "14ConfigureHostAccess.ps1"       "14 — Configure host SSMS access"
+    Invoke-Step "15SummaryReport.ps1"             "15 — Generate summary report"
 
 } catch {
     Write-Log "BUILD FAILED: $_" ERROR

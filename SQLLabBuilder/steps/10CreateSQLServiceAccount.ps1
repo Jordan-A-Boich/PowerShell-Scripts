@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 10 — Create the SQL Server service account in Active Directory.
@@ -18,6 +18,13 @@ $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIO
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-10.done"
 if (Test-Path $cpFile) {
+    $laterDone = @("step-11.done","step-12.done","step-13.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 10 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 10 checkpoint found — verifying SQL service account..." INFO
     try {
         $exists = Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {

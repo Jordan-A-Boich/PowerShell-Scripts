@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 14 — Configure host machine for direct SSMS access to lab SQL instances.
@@ -71,17 +71,33 @@ function Add-LabSQLLogin {
     Write-Log "[$VMName] Creating 'labadmin' SQL login..." INFO
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
         param($LoginPwd)
-        Import-Module SqlServer -ErrorAction SilentlyContinue
 
-        $existing = Invoke-Sqlcmd -Query "SELECT name FROM sys.server_principals WHERE name='labadmin'" `
-            -ServerInstance localhost -ErrorAction Stop
-        if ($existing) {
+        # Use ADO.NET directly — no SqlServer module required on the VM
+        function Invoke-LocalSql {
+            param([string]$Query, [int]$Timeout = 60)
+            $conn = New-Object System.Data.SqlClient.SqlConnection(
+                "Server=localhost;Database=master;Integrated Security=True;Connect Timeout=30")
+            try {
+                $conn.Open()
+                $cmd = New-Object System.Data.SqlClient.SqlCommand($Query, $conn)
+                $cmd.CommandTimeout = $Timeout
+                $adapter = New-Object System.Data.SqlClient.SqlDataAdapter($cmd)
+                $table   = New-Object System.Data.DataTable
+                [void]$adapter.Fill($table)
+                return $table
+            } finally {
+                if ($conn.State -eq 'Open') { $conn.Close() }
+            }
+        }
+
+        $existing = Invoke-LocalSql -Query "SELECT name FROM sys.server_principals WHERE name='labadmin'"
+        if ($existing.Rows.Count -gt 0) {
             Write-Output "Login 'labadmin' already exists."
         } else {
-            Invoke-Sqlcmd -Query @"
+            Invoke-LocalSql -Query @"
 CREATE LOGIN [labadmin] WITH PASSWORD='$LoginPwd', CHECK_POLICY=OFF, CHECK_EXPIRATION=OFF;
 ALTER SERVER ROLE [sysadmin] ADD MEMBER [labadmin];
-"@ -ServerInstance localhost -ErrorAction Stop
+"@
             Write-Output "Login 'labadmin' created with sysadmin role."
         }
     } -ArgumentList $LabAdminPassword -ErrorAction Stop |

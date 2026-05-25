@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 12 — Enable Always On Availability Groups feature on both SQL nodes.
@@ -18,14 +18,25 @@ $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIO
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-12.done"
 if (Test-Path $cpFile) {
+    $laterDone = @("step-13.done","step-14.done","step-15.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 12 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 12 checkpoint found — verifying Always On status..." INFO
     $allEnabled = $true
     foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
         try {
             $enabled = Invoke-Command -VMName $vmName -Credential $domainAdminCred -ScriptBlock {
-                $regPath = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL*\MSSQLServer\HADR"
-                $keys    = Get-Item $regPath -ErrorAction SilentlyContinue
-                if ($keys) { return ($keys | Get-ItemPropertyValue -Name IsHadrEnabled -ErrorAction SilentlyContinue) -eq 1 }
+                $sqlKey = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server" |
+                    Where-Object { $_.PSChildName -match '^MSSQL\d+\.MSSQLSERVER$' } | Select-Object -First 1
+                if ($sqlKey) {
+                    $hadrPath = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$($sqlKey.PSChildName)\MSSQLServer\HADR"
+                    $val = Get-ItemProperty -Path $hadrPath -Name IsHadrEnabled -ErrorAction SilentlyContinue
+                    return ($val.IsHadrEnabled -eq 1)
+                }
                 return $false
             } -ErrorAction Stop
             if (-not $enabled) { $allEnabled = $false }
@@ -75,14 +86,14 @@ function Enable-AlwaysOn {
             }
         } catch {}
 
-        # Registry fallback
+        # Registry fallback — build a clean HKLM:\ path from the key name
         $sqlKeys = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server" |
-            Where-Object { $_.Name -match 'MSSQL\d+\.MSSQLSERVER' }
+            Where-Object { $_.PSChildName -match '^MSSQL\d+\.MSSQLSERVER$' }
         foreach ($key in $sqlKeys) {
-            $hadrPath = "$($key.PSPath)\MSSQLServer\HADR"
+            $hadrPath = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$($key.PSChildName)\MSSQLServer\HADR"
             if (-not (Test-Path $hadrPath)) { New-Item -Path $hadrPath -Force | Out-Null }
             Set-ItemProperty -Path $hadrPath -Name IsHadrEnabled -Value 1 -Type DWord -Force
-            Write-Output "Always On enabled via registry for $($key.Name)."
+            Write-Output "Always On enabled via registry for $($key.PSChildName)."
         }
 
     } -ErrorAction Stop | ForEach-Object { Write-Log "[$VMName] $_" INFO }

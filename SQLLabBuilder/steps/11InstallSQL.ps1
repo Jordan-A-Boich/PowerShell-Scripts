@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 11 — Install SQL Server on SQLLAB-SQL1 and SQLLAB-SQL2.
@@ -68,12 +68,13 @@ function Install-SQLOnVM {
     #region Initialize data disk (D:\) inside VM
     Write-Log "[$VMName] Initializing SQL data disk..." INFO
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
+        # Get-Disk CIM objects expose the disk index as .Number (not .DiskNumber)
         $dataDisk = Get-Disk | Where-Object { $_.OperationalStatus -eq 'Offline' -or
             ($_.PartitionStyle -eq 'RAW' -and $_.Size -gt 5GB) } | Select-Object -First 1
 
         if (-not $dataDisk) {
             $dataDisk = Get-Disk | Where-Object {
-                $_.PartitionStyle -eq 'RAW' -and $_.DiskNumber -gt 0
+                $_.PartitionStyle -eq 'RAW' -and $_.Number -gt 0
             } | Select-Object -First 1
         }
 
@@ -86,8 +87,9 @@ function Install-SQLOnVM {
             throw "No raw data disk found for SQL data volume."
         }
 
-        Write-Output "Initializing disk $($dataDisk.DiskNumber)..."
-        Initialize-Disk -Number $dataDisk.DiskNumber -PartitionStyle GPT -PassThru -ErrorAction Stop |
+        $diskNum = $dataDisk.Number
+        Write-Output "Initializing disk $diskNum..."
+        Initialize-Disk -Number $diskNum -PartitionStyle GPT -PassThru -ErrorAction Stop |
             New-Partition -DriveLetter D -UseMaximumSize |
             Format-Volume -FileSystem NTFS -NewFileSystemLabel "SQLData" -Confirm:$false -ErrorAction Stop | Out-Null
         Write-Output "Data disk initialized as D:\"
@@ -103,31 +105,16 @@ function Install-SQLOnVM {
     Write-Log "[$VMName] SQL data directories created." INFO
     #endregion
 
-    #region Copy ISO into VM and mount it
-    Write-Log "[$VMName] Copying SQL Server ISO into VM (this may take several minutes)..." INFO
-
-    # Copy ISO to VM's C:\Temp using PS Direct file transfer
-    Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
-        if (-not (Test-Path "C:\Temp")) { New-Item -ItemType Directory -Path "C:\Temp" -Force | Out-Null }
-    } -ErrorAction Stop
-
-    $session = New-PSSession -VMName $VMName -Credential $Credential -ErrorAction Stop
-    try {
-        $isoDestInVM = "C:\Temp\SQLSetup.iso"
-        $isoExistsInVM = Invoke-Command -Session $session -ScriptBlock {
-            param($p) Test-Path $p
-        } -ArgumentList $isoDestInVM -ErrorAction Stop
-
-        if (-not $isoExistsInVM) {
-            Write-Log "[$VMName] Transferring ISO to VM..." INFO
-            Copy-Item -Path $sqlISOHostPath -Destination $isoDestInVM -ToSession $session -ErrorAction Stop
-            Write-Log "[$VMName] ISO transferred." SUCCESS
-        } else {
-            Write-Log "[$VMName] ISO already present in VM." INFO
-        }
-    } finally {
-        Remove-PSSession $session -ErrorAction SilentlyContinue
+    #region Attach SQL ISO to VM DVD drive from host (avoids slow file copy into VM)
+    Write-Log "[$VMName] Attaching SQL ISO to VM DVD drive..." INFO
+    $dvd = Get-VMDvdDrive -VMName $VMName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($dvd) {
+        Set-VMDvdDrive -VMName $VMName -ControllerNumber $dvd.ControllerNumber `
+            -ControllerLocation $dvd.ControllerLocation -Path $SQLISOHostPath -ErrorAction Stop
+    } else {
+        Add-VMDvdDrive -VMName $VMName -Path $SQLISOHostPath -ErrorAction Stop
     }
+    Write-Log "[$VMName] SQL ISO attached to DVD drive." SUCCESS
     #endregion
 
     #region Run SQL setup
@@ -136,11 +123,12 @@ function Install-SQLOnVM {
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
         param($SvcUser, $SvcPass, $SAPass, $DomainAdmin, $AdmPass, $DomainName, $NetBIOS)
 
-        # Mount ISO
-        $isoPath = "C:\Temp\SQLSetup.iso"
-        $mount   = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
-        $driveLetter = ($mount | Get-Volume).DriveLetter
+        # Find the DVD drive (SQL ISO is attached as a Hyper-V DVD drive)
+        $dvdDrive    = Get-WmiObject Win32_CDROMDrive | Where-Object { $_.MediaLoaded } | Select-Object -First 1
+        if (-not $dvdDrive) { throw "No loaded DVD drive found in VM. SQL ISO may not be attached." }
+        $driveLetter = $dvdDrive.Drive.TrimEnd(':')
         $setupExe    = "${driveLetter}:\setup.exe"
+        if (-not (Test-Path $setupExe)) { throw "setup.exe not found on DVD drive ${driveLetter}:\" }
 
         $setupLog = "C:\Temp\SQLSetupLog"
 
@@ -176,8 +164,6 @@ function Install-SQLOnVM {
 
         Write-Output "Launching SQL Server setup..."
         $proc = Start-Process -FilePath $setupExe -ArgumentList $args -Wait -PassThru -NoNewWindow
-
-        Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
 
         if ($proc.ExitCode -notin @(0, 3010)) {
             # Locate and output summary log
@@ -282,6 +268,14 @@ foreach ($pair in @(
         -ComputerName $pair.CN `
         -SQLISOHostPath $sqlISOHostPath `
         -Credential   $domainAdminCred
+
+    # Eject SQL ISO from the VM's DVD drive after installation
+    $dvd = Get-VMDvdDrive -VMName $pair.VM -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($dvd) {
+        Set-VMDvdDrive -VMName $pair.VM -ControllerNumber $dvd.ControllerNumber `
+            -ControllerLocation $dvd.ControllerLocation -Path $null -ErrorAction SilentlyContinue
+        Write-Log "[$($pair.VM)] SQL ISO ejected from DVD drive." INFO
+    }
 }
 
 #region Checkpoint

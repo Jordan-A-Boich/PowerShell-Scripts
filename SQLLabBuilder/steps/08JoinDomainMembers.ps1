@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 08 — Join SQLLAB-SQL1 and SQLLAB-SQL2 to sqllab.local.
@@ -21,6 +21,13 @@ $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIO
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-08.done"
 if (Test-Path $cpFile) {
+    $laterDone = @("step-09.done","step-10.done","step-11.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 08 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 08 checkpoint found — verifying domain membership..." INFO
     $allJoined = $true
     foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
@@ -28,7 +35,7 @@ if (Test-Path $cpFile) {
             $dom = Invoke-Command -VMName $vmName -Credential $domainAdminCred -ScriptBlock {
                 (Get-WmiObject Win32_ComputerSystem).Domain
             } -ErrorAction Stop
-            if ($dom -ne $using:DomainName) { $allJoined = $false }
+            if ($dom -ne $DomainName) { $allJoined = $false }
         } catch { $allJoined = $false }
     }
     if ($allJoined) {

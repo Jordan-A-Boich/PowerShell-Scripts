@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 09 — Create Windows Failover Cluster and configure File Share Witness.
@@ -27,6 +27,13 @@ $localAdminCred  = New-Object System.Management.Automation.PSCredential("Adminis
 #region Checkpoint check
 $cpFile = Join-Path $CheckpointPath "step-09.done"
 if (Test-Path $cpFile) {
+    $laterDone = @("step-10.done","step-11.done","step-12.done") |
+                 Where-Object { Test-Path (Join-Path $CheckpointPath $_) }
+    if ($laterDone) {
+        Write-Log "Step 09 checkpoint found and later steps confirmed — skipping." SUCCESS
+        return
+    }
+
     Write-Log "Step 09 checkpoint found — verifying cluster..." INFO
     try {
         $clusterState = Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
@@ -60,7 +67,7 @@ foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
 #region Create ClusterWitness share on DC
 Write-Log "[$DCVMName] Creating ClusterWitness file share..." INFO
 Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
-    param($WitnessShare, $DomainNetBIOS, $ClusterName)
+    param($WitnessShare)
     $sharePath = "C:\ClusterWitness"
     if (-not (Test-Path $sharePath)) {
         New-Item -ItemType Directory -Path $sharePath -Force | Out-Null
@@ -72,14 +79,7 @@ Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
     } else {
         Write-Output "Share already exists: \\$env:COMPUTERNAME\$WitnessShare"
     }
-    # Grant the cluster computer account full control (will be needed after cluster is created)
-    $acl = Get-Acl $sharePath
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "$DomainNetBIOS\$ClusterName`$", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-    $acl.SetAccessRule($rule)
-    Set-Acl -Path $sharePath -AclObject $acl -ErrorAction SilentlyContinue
-    Write-Output "ACL updated for $DomainNetBIOS\$ClusterName`$"
-} -ArgumentList $WitnessShare, $NetBIOSName, $ClusterName -ErrorAction Stop |
+} -ArgumentList $WitnessShare -ErrorAction Stop |
     ForEach-Object { Write-Log "[$DCVMName] $_" INFO }
 #endregion
 
@@ -118,6 +118,24 @@ Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
     Write-Output "Cluster '$CName' created with IP $CIP."
 } -ArgumentList $ClusterName, $SQL1ComputerName, $SQL2ComputerName, $ClusterIP -ErrorAction Stop |
     ForEach-Object { Write-Log "[$SQL1VMName] $_" INFO }
+#endregion
+
+#region Grant cluster computer account NTFS ACL on witness share
+# Must happen AFTER New-Cluster so the SQLLabCluster$ AD account exists
+Write-Log "[$DCVMName] Granting cluster account NTFS ACL on witness share..." INFO
+Start-Sleep -Seconds 20   # Allow cluster computer account to replicate in AD
+Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
+    param($DomainNetBIOS, $ClusterName, $WitnessShare)
+    $sharePath      = "C:\ClusterWitness"
+    $clusterAccount = "$DomainNetBIOS\$ClusterName`$"
+    $acl = Get-Acl $sharePath
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $clusterAccount, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+    $acl.SetAccessRule($rule)
+    Set-Acl -Path $sharePath -AclObject $acl -ErrorAction Stop
+    Write-Output "ACL granted to $clusterAccount"
+} -ArgumentList $NetBIOSName, $ClusterName, $WitnessShare -ErrorAction Stop |
+    ForEach-Object { Write-Log "[$DCVMName] $_" INFO }
 #endregion
 
 #region Configure File Share Witness

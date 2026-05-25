@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 00 — Preflight checks.
@@ -43,7 +43,24 @@ if ($hvFeature.State -ne 'Enabled' -or $hvPSFeature.State -ne 'Enabled') {
 Write-Log "Hyper-V features are enabled." SUCCESS
 #endregion
 
-#region 3. SqlServer PowerShell module
+#region 3. Host RAM check
+Write-Log "Checking host available memory..." INFO
+$totalRAMGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+$availRAMGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+Write-Log "Host RAM — Total: ${totalRAMGB} GB   Available: ${availRAMGB} GB" INFO
+if ($availRAMGB -lt 10) {
+    Write-Log "WARNING: Only ${availRAMGB} GB RAM is currently available. The lab requires approximately 10 GB to run all 3 VMs simultaneously." WARN
+    Write-Log "Running on a laptop with limited RAM may cause heavy swapping and very slow build times." WARN
+    $proceed = Read-Host "Available RAM is low (${availRAMGB} GB free). Continue anyway? (Y/N)"
+    if ($proceed -ne 'Y' -and $proceed -ne 'y') {
+        throw "Build cancelled by user — insufficient available RAM."
+    }
+} else {
+    Write-Log "Available RAM is sufficient (${availRAMGB} GB free)." SUCCESS
+}
+#endregion
+
+#region 4. SqlServer PowerShell module
 Write-Log "Checking for SqlServer PowerShell module..." INFO
 if (-not (Get-Module -ListAvailable -Name SqlServer)) {
     Write-Log "SqlServer module not found. Installing (this may take a minute)..." WARN

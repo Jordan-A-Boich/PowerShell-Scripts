@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 03 — Create Hyper-V internal switch and NAT network.
@@ -89,7 +89,7 @@ if ($existingNat) {
         # Check if a conflicting NAT exists on the same prefix
         $conflict = Get-NetNat | Where-Object { $_.InternalIPInterfaceAddressPrefix -eq "$LabSubnet/$LabPrefix" }
         if ($conflict) {
-            Write-Log "A conflicting NAT already exists on $LabSubnet/$LabPrefix: $($conflict.Name). " WARN
+            Write-Log "A conflicting NAT already exists on $LabSubnet/${LabPrefix}: $($conflict.Name)." WARN
             Write-Log "The lab subnet is already NATted — continuing." WARN
         } else {
             Write-Log "Failed to create NAT: $_" ERROR
