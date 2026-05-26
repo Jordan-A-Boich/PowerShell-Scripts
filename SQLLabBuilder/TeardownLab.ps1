@@ -234,7 +234,24 @@ Write-Log "Removing lab firewall rules..." INFO
 }
 #endregion
 
-#region 9. Optional: Delete ISOs
+#region 9. Remove step checkpoints
+Write-Log "Removing build checkpoints..." INFO
+if ($CheckpointPath -and (Test-Path $CheckpointPath)) {
+    try {
+        $cpFiles = Get-ChildItem -Path $CheckpointPath -Filter "step-*.done" -ErrorAction Stop
+        if ($cpFiles.Count -gt 0) {
+            $cpFiles | Remove-Item -Force -ErrorAction Stop
+            Write-Log "Removed $($cpFiles.Count) checkpoint file(s) from: $CheckpointPath" SUCCESS
+        } else {
+            Write-Log "No checkpoint files found — skipping" INFO
+        }
+    } catch { Write-Log "Error removing checkpoints: $_" WARN }
+} else {
+    Write-Log "CheckpointPath not set or does not exist — skipping" WARN
+}
+#endregion
+
+#region 10. Optional: Delete ISOs
 Write-Host ""
 $deleteISOs = Read-Host "Do you also want to delete the downloaded ISOs? (Y/N)"
 if ($deleteISOs -eq 'Y' -or $deleteISOs -eq 'y') {

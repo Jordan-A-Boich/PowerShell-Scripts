@@ -484,6 +484,43 @@ for ($i = 0; $i -lt $nodeList.Count; $i++) {
     }
 }
 
+#region Enable Agent XPs and start SQL Server Agent on both SQL VMs
+foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
+    Write-Log "[$vmName] Enabling Agent XPs and starting SQL Server Agent..." INFO
+    Invoke-Command -VMName $vmName -Credential $domainAdminCred -ScriptBlock {
+        $connStr = "Server=lpc:localhost;Database=master;Integrated Security=True;Connect Timeout=30"
+        $conn = New-Object System.Data.SqlClient.SqlConnection($connStr)
+        try {
+            $conn.Open()
+            $cmd = $conn.CreateCommand()
+            foreach ($sql in @(
+                "EXEC sp_configure 'show advanced options', 1; RECONFIGURE WITH OVERRIDE",
+                "EXEC sp_configure 'Agent XPs', 1; RECONFIGURE WITH OVERRIDE"
+            )) {
+                $cmd.CommandText = $sql
+                $cmd.ExecuteNonQuery() | Out-Null
+            }
+            Write-Output "Agent XPs enabled."
+        } finally {
+            if ($conn.State -eq 'Open') { $conn.Close() }
+        }
+
+        $agentSvc = Get-Service SQLSERVERAGENT -ErrorAction SilentlyContinue
+        if ($agentSvc) {
+            Set-Service SQLSERVERAGENT -StartupType Automatic -ErrorAction SilentlyContinue
+            if ($agentSvc.Status -ne 'Running') {
+                Start-Service SQLSERVERAGENT -ErrorAction Stop
+                Write-Output "SQL Server Agent started (set to Automatic)."
+            } else {
+                Write-Output "SQL Server Agent already running."
+            }
+        } else {
+            Write-Output "WARN: SQLSERVERAGENT service not found - verify SQL installation."
+        }
+    } -ErrorAction Stop | ForEach-Object { Write-Log "[$vmName] $_" INFO }
+}
+#endregion
+
 #region Checkpoint
 New-Item -ItemType File -Path $cpFile -Force | Out-Null
 Write-Log "Checkpoint written: step-12.done" SUCCESS

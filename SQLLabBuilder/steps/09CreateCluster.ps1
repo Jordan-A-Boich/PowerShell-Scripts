@@ -105,6 +105,11 @@ Write-Log "NOTE: Test-Cluster warnings about shared storage and single-network a
 #endregion
 
 #region Create cluster
+# Brief pause after Test-Cluster — the cluster service needs a moment to settle
+# before New-Cluster can enumerate network topology in a single-NIC Hyper-V lab.
+Write-Log "[$SQL1VMName] Waiting 30 s before creating cluster (network topology settle time)..." INFO
+Start-Sleep -Seconds 30
+
 Write-Log "[$SQL1VMName] Creating cluster '$ClusterName'..." INFO
 Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
     param($CName, $Node1, $Node2, $CIP)
@@ -112,12 +117,29 @@ Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
 
     $existing = Get-Cluster -Name $CName -ErrorAction SilentlyContinue
     if ($existing) {
-        Write-Output "Cluster '$CName' already exists — skipping New-Cluster."
+        Write-Output "Cluster '$CName' already exists - skipping New-Cluster."
         return
     }
 
-    New-Cluster -Name $CName -Node $Node1,$Node2 -StaticAddress $CIP -NoStorage -ErrorAction Stop | Out-Null
-    Write-Output "Cluster '$CName' created with IP $CIP."
+    $attempt  = 0
+    $maxTries = 3
+    $created  = $false
+    while (-not $created -and $attempt -lt $maxTries) {
+        $attempt++
+        try {
+            New-Cluster -Name $CName -Node $Node1,$Node2 -StaticAddress $CIP -NoStorage -ErrorAction Stop | Out-Null
+            Write-Output "Cluster '$CName' created with IP $CIP."
+            $created = $true
+        } catch {
+            $msg = $_.Exception.Message -replace '\r?\n.*',''
+            if ($attempt -lt $maxTries) {
+                Write-Output "New-Cluster attempt $attempt failed: $msg - retrying in 30 s..."
+                Start-Sleep -Seconds 30
+            } else {
+                throw
+            }
+        }
+    }
 } -ArgumentList $ClusterName, $SQL1ComputerName, $SQL2ComputerName, $ClusterIP -ErrorAction Stop |
     ForEach-Object { Write-Log "[$SQL1VMName] $_" INFO }
 #endregion

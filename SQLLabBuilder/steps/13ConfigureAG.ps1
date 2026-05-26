@@ -70,136 +70,6 @@ if (Test-Path $cpFile) {
 }
 #endregion
 
-$backupShare = "\\$DCComputerName\$AGShareName"
-
-#region Create AGShare on DC
-Write-Log "[$DCVMName] Creating AG backup share '$AGShareName'..." INFO
-Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
-    param($ShareName)
-    $sharePath = "C:\AGShare"
-    if (-not (Test-Path $sharePath)) { New-Item -ItemType Directory -Path $sharePath -Force | Out-Null }
-    $share = Get-SmbShare -Name $ShareName -ErrorAction SilentlyContinue
-    if (-not $share) {
-        New-SmbShare -Name $ShareName -Path $sharePath -FullAccess "Everyone" -ErrorAction Stop | Out-Null
-        Write-Output "Created share: $ShareName"
-    } else {
-        Write-Output "Share '$ShareName' already exists."
-    }
-} -ArgumentList $AGShareName -ErrorAction Stop |
-    ForEach-Object { Write-Log "[$DCVMName] $_" INFO }
-#endregion
-
-#region Prepare test database on SQL1 and take fresh backups
-Write-Log "[$SQL1VMName] Preparing test database '$TestDatabase'..." INFO
-Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
-    param($DBName, $BackupShare, $InvokeLocalSqlDef, $AGName)
-    . ([scriptblock]::Create($InvokeLocalSqlDef))
-
-    # Check current state of the database
-    $existsRow = Invoke-LocalSql -Query "SELECT name, state_desc FROM sys.databases WHERE name = '$DBName'"
-
-    if ($existsRow.Rows.Count -gt 0) {
-        $stateDesc = $existsRow.Rows[0]['state_desc']
-        Write-Output "Database '$DBName' exists in state '$stateDesc'."
-
-        if ($stateDesc -ne 'ONLINE') {
-            # Non-ONLINE state — force single-user to break connections, then drop and recreate
-            Write-Output "Non-ONLINE state detected — dropping database '$DBName'..."
-            try {
-                Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
-            } catch {
-                Write-Output "SET SINGLE_USER warning (non-fatal): $($_.Exception.Message -replace '\r?\n.*','')"
-            }
-            Invoke-LocalSql -Query "DROP DATABASE [$DBName]"
-            Write-Output "Dropped database '$DBName'."
-
-            Invoke-LocalSql -Query "CREATE DATABASE [$DBName] ON PRIMARY (NAME='$DBName', FILENAME='D:\SQLData\$DBName.mdf', SIZE=64MB) LOG ON (NAME='${DBName}_log', FILENAME='D:\SQLLog\${DBName}_log.ldf', SIZE=16MB)"
-            Write-Output "Database '$DBName' created."
-            Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET RECOVERY FULL"
-            Write-Output "Recovery model set to FULL."
-        } else {
-            # ONLINE — just ensure correct recovery model
-            Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET RECOVERY FULL"
-            Write-Output "Database '$DBName' is ONLINE — recovery model confirmed FULL."
-        }
-    } else {
-        Write-Output "Database '$DBName' not found — creating..."
-        try {
-            Invoke-LocalSql -Query "CREATE DATABASE [$DBName] ON PRIMARY (NAME='$DBName', FILENAME='D:\SQLData\$DBName.mdf', SIZE=64MB) LOG ON (NAME='${DBName}_log', FILENAME='D:\SQLLog\${DBName}_log.ldf', SIZE=16MB)"
-            Write-Output "Database '$DBName' created."
-        } catch {
-            # CREATE DATABASE fails "already exists" when the database is in an AG from a
-            # prior run but not visible in sys.databases (HADR startup timing).  The catalog
-            # entry can't be dropped while the database is an AG member, so we must remove
-            # it from the AG first, then drop, then delete any orphaned files, then retry.
-            if ($_.Exception.Message -notmatch 'already exists') { throw }
-            Write-Output "WARNING: CREATE DATABASE reported 'already exists' but sys.databases shows no row — cleaning up prior AG state..."
-
-            # Step 1: Remove from AG using the known $AGName directly.
-            # sys.availability_databases_cluster is empty immediately after SQL Server restart
-            # (WSFC reconnection in progress), so a catalog query is unreliable here.
-            # Retry up to 60 s in case the HADR manager is still initializing post-restart.
-            $agRemoved = $false
-            $agRetryDeadline = (Get-Date).AddSeconds(60)
-            while (-not $agRemoved -and (Get-Date) -lt $agRetryDeadline) {
-                try {
-                    Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] REMOVE DATABASE [$DBName]"
-                    Write-Output "Removed '$DBName' from AG '$AGName'."
-                    $agRemoved = $true
-                } catch {
-                    $rmMsg = $_.Exception.Message -replace '\r?\n.*',''
-                    if ($rmMsg -match 'not.*member|does not exist|Cannot find|not found|not joined') {
-                        Write-Output "DB '$DBName' not in AG '$AGName' (or AG not found) - no removal needed."
-                        $agRemoved = $true
-                    } else {
-                        Write-Output "AG removal (will retry in 5s): $rmMsg"
-                        Start-Sleep -Seconds 5
-                    }
-                }
-            }
-            if (-not $agRemoved) {
-                Write-Output "WARNING: Could not confirm AG removal after 60s — proceeding with DROP attempt."
-            }
-
-            # Step 2: force single-user then drop
-            try {
-                Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
-            } catch { }
-            try {
-                Invoke-LocalSql -Query "DROP DATABASE IF EXISTS [$DBName]"
-                Write-Output "Database '$DBName' dropped."
-            } catch {
-                Write-Output "DROP attempt (non-fatal): $($_.Exception.Message -replace '\r?\n.*','')"
-            }
-
-            # Step 3: remove any orphaned physical files
-            foreach ($f in @("D:\SQLData\$DBName.mdf", "D:\SQLLog\${DBName}_log.ldf")) {
-                if (Test-Path $f) {
-                    Remove-Item $f -Force -ErrorAction SilentlyContinue
-                    Write-Output "Removed orphaned file: $f"
-                }
-            }
-
-            # Step 4: retry create
-            Invoke-LocalSql -Query "CREATE DATABASE [$DBName] ON PRIMARY (NAME='$DBName', FILENAME='D:\SQLData\$DBName.mdf', SIZE=64MB) LOG ON (NAME='${DBName}_log', FILENAME='D:\SQLLog\${DBName}_log.ldf', SIZE=16MB)"
-            Write-Output "Database '$DBName' created (after AG cleanup)."
-        }
-        Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET RECOVERY FULL"
-        Write-Output "Recovery model set to FULL."
-    }
-
-    Write-Output "Taking full backup..."
-    Invoke-LocalSql -Query "BACKUP DATABASE [$DBName] TO DISK='$BackupShare\${DBName}_full.bak' WITH INIT, FORMAT, COMPRESSION" -Timeout 300
-    Write-Output "Full backup completed: $BackupShare\${DBName}_full.bak"
-
-    Write-Output "Taking log backup..."
-    Invoke-LocalSql -Query "BACKUP LOG [$DBName] TO DISK='$BackupShare\${DBName}_log.bak' WITH INIT, FORMAT" -Timeout 120
-    Write-Output "Log backup completed: $BackupShare\${DBName}_log.bak"
-
-} -ArgumentList $TestDatabase, $backupShare, $invokeLocalSqlDef.ToString(), $AGName -ErrorAction Stop |
-    ForEach-Object { Write-Log "[$SQL1VMName] $_" INFO }
-#endregion
-
 #region Create AG endpoint on both nodes
 foreach ($pair in @(
     @{ VM = $SQL1VMName; IP = $SQL1StaticIP }
@@ -256,74 +126,60 @@ WHERE sp.name = '$SvcAccount' AND p.permission_name = 'CONNECT'
             Write-Output "CONNECT already granted to '$SvcAccount'."
         }
 
+        # Open Windows Firewall for the HADR endpoint port (idempotent)
+        $fwRule = Get-NetFirewallRule -DisplayName "SQL HADR Endpoint" -ErrorAction SilentlyContinue
+        if (-not $fwRule) {
+            New-NetFirewallRule -DisplayName "SQL HADR Endpoint" -Direction Inbound `
+                -Protocol TCP -LocalPort $Port -Action Allow -Profile Any -ErrorAction Stop | Out-Null
+            Write-Output "Firewall rule added: allow TCP inbound port $Port."
+        } else {
+            Write-Output "Firewall rule 'SQL HADR Endpoint' already exists."
+        }
+
     } -ArgumentList $EndpointPort, $SQLSvcAccount, $invokeLocalSqlDef.ToString() -ErrorAction Stop |
         ForEach-Object { Write-Log "[$($pair.VM)] $_" INFO }
 }
 #endregion
 
 #region Create Availability Group on SQL1
-Write-Log "[$SQL1VMName] Creating Availability Group '$AGName'..." INFO
+$agTypeLabel = if ($global:ContainedAG) { "Contained Availability Group" } else { "Availability Group" }
+Write-Log "[$SQL1VMName] Creating $agTypeLabel '$AGName'..." INFO
 Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
-    param($AGName, $DBName, $SQL1Name, $SQL2Name, $ListenerName, $ListenerIP, $ListenerPort, $EPPort, $InvokeLocalSqlDef)
+    param($AGName, $SQL1Name, $SQL2Name, $ListenerName, $ListenerIP, $ListenerPort, $EPPort, $InvokeLocalSqlDef, $IsContained)
     . ([scriptblock]::Create($InvokeLocalSqlDef))
+    $agTypeLabel = if ($IsContained) { "Contained AG" } else { "AG" }
 
     $existingAG = Invoke-LocalSql -Query "SELECT name FROM sys.availability_groups WHERE name='$AGName'"
     if ($existingAG.Rows.Count -gt 0) {
-        Write-Output "AG '$AGName' already exists."
-        # If the database was removed and recreated it won't be a member anymore — re-add it.
-        $dbInAG = Invoke-LocalSql -Query "
-SELECT database_name FROM sys.availability_databases_cluster
-WHERE  database_name = '$DBName'
-  AND  group_id = (SELECT group_id FROM sys.availability_groups WHERE name = '$AGName')"
-        if ($dbInAG.Rows.Count -eq 0) {
-            try {
-                Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] ADD DATABASE [$DBName]"
-                Write-Output "Re-added '$DBName' to existing AG '$AGName'."
-            } catch {
-                if ($_.Exception.Message -notmatch 'already') { throw }
-                Write-Output "Database '$DBName' already in AG '$AGName'."
-            }
-        } else {
-            Write-Output "Database '$DBName' already in AG '$AGName'."
-        }
+        Write-Output "$agTypeLabel '$AGName' already exists."
     } else {
         $domain = $env:USERDNSDOMAIN
+        $containedClause = if ($IsContained) { "CONTAINED, " } else { "" }
+        $seedingClause   = if ($IsContained) { ",`n    SEEDING_MODE        = AUTOMATIC" } else { "" }
         try {
             Invoke-LocalSql -Query "
 CREATE AVAILABILITY GROUP [$AGName]
-WITH (AUTOMATED_BACKUP_PREFERENCE = SECONDARY, DB_FAILOVER = OFF, DTC_SUPPORT = NONE)
-FOR DATABASE [$DBName]
+WITH (${containedClause}AUTOMATED_BACKUP_PREFERENCE = SECONDARY, DB_FAILOVER = OFF, DTC_SUPPORT = NONE)
+FOR
 REPLICA ON
   N'$SQL1Name' WITH (
     ENDPOINT_URL        = N'TCP://$SQL1Name.$domain`:$EPPort',
     FAILOVER_MODE       = AUTOMATIC,
     AVAILABILITY_MODE   = SYNCHRONOUS_COMMIT,
     BACKUP_PRIORITY     = 50,
-    SECONDARY_ROLE(ALLOW_CONNECTIONS = ALL)
+    SECONDARY_ROLE(ALLOW_CONNECTIONS = ALL)${seedingClause}
   ),
   N'$SQL2Name' WITH (
     ENDPOINT_URL        = N'TCP://$SQL2Name.$domain`:$EPPort',
     FAILOVER_MODE       = AUTOMATIC,
     AVAILABILITY_MODE   = SYNCHRONOUS_COMMIT,
     BACKUP_PRIORITY     = 50,
-    SECONDARY_ROLE(ALLOW_CONNECTIONS = ALL)
+    SECONDARY_ROLE(ALLOW_CONNECTIONS = ALL)${seedingClause}
   )" -Timeout 120
-            Write-Output "AG '$AGName' created."
+            Write-Output "$agTypeLabel '$AGName' created."
         } catch {
             if ($_.Exception.Message -notmatch 'already exists') { throw }
-            Write-Output "AG '$AGName' already exists (caught on create) — continuing."
-        }
-
-        # Idempotent: ensure the (freshly recreated) database is in the AG.
-        # Required when the AG pre-existed but was invisible in sys.availability_groups
-        # during the initial check (HADR timing) — the catch above skips the FOR DATABASE
-        # clause, so the database is never added.
-        try {
-            Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] ADD DATABASE [$DBName]"
-            Write-Output "Added '$DBName' to AG '$AGName'."
-        } catch {
-            if ($_.Exception.Message -notmatch 'already') { throw }
-            Write-Output "Database '$DBName' already in AG '$AGName'."
+            Write-Output "$agTypeLabel '$AGName' already exists (caught on create) — continuing."
         }
 
         try {
@@ -341,87 +197,67 @@ ADD LISTENER N'$ListenerName' (
         }
     }
 
-} -ArgumentList $AGName, $TestDatabase, $SQL1ComputerName, $SQL2ComputerName,
-    $ListenerName, $ListenerIP, $ListenerPort, $EndpointPort, $invokeLocalSqlDef.ToString() -ErrorAction Stop |
+    # For Contained AG: ensure SEEDING_MODE = AUTOMATIC on both replicas, then
+    # GRANT CREATE ANY DATABASE on the primary. Both are required for auto-seeding:
+    # the primary GRANT authorizes SQL Server to push databases to secondaries;
+    # the secondary GRANT (done in the SQL2 scriptblock) authorizes receiving them.
+    if ($IsContained) {
+        foreach ($replicaName in @($SQL1Name, $SQL2Name)) {
+            try {
+                Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] MODIFY REPLICA ON N'$replicaName' WITH (SEEDING_MODE = AUTOMATIC)"
+                Write-Output "SEEDING_MODE = AUTOMATIC confirmed on '$replicaName'."
+            } catch {
+                Write-Output "MODIFY REPLICA warning on '$replicaName' (non-fatal): $($_.Exception.Message -replace '\r?\n.*','')"
+            }
+        }
+        try {
+            Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] GRANT CREATE ANY DATABASE"
+            Write-Output "Granted CREATE ANY DATABASE on primary — auto-seeding authorized."
+        } catch {
+            if ($_.Exception.Message -notmatch 'already') { throw }
+            Write-Output "CREATE ANY DATABASE already granted on primary."
+        }
+    }
+
+} -ArgumentList $AGName, $SQL1ComputerName, $SQL2ComputerName,
+    $ListenerName, $ListenerIP, $ListenerPort, $EndpointPort, $invokeLocalSqlDef.ToString(), $global:ContainedAG -ErrorAction Stop |
     ForEach-Object { Write-Log "[$SQL1VMName] $_" INFO }
 #endregion
 
-#region Restore database on SQL2 and join to AG
-Write-Log "[$SQL2VMName] Restoring database and joining AG..." INFO
+#region Join SQL2 to AG
+Write-Log "[$SQL2VMName] Joining replica to AG '$AGName'..." INFO
 Invoke-Command -VMName $SQL2VMName -Credential $domainAdminCred -ScriptBlock {
-    param($DBName, $BackupShare, $AGName, $InvokeLocalSqlDef)
+    param($AGName, $InvokeLocalSqlDef, $IsContained)
     . ([scriptblock]::Create($InvokeLocalSqlDef))
 
-    # Check if already in AG
-    $inAG = Invoke-LocalSql -Query "
-SELECT db.name
-FROM sys.databases db
-JOIN sys.dm_hadr_database_replica_states rs ON db.database_id = rs.database_id
-WHERE db.name = '$DBName'"
-
-    if ($inAG.Rows.Count -gt 0) {
-        Write-Output "Database '$DBName' already part of AG — skipping restore."
-    } else {
-        # Drop any existing copy regardless of state
-        $existsRow = Invoke-LocalSql -Query "SELECT name, state_desc FROM sys.databases WHERE name = '$DBName'"
-        if ($existsRow.Rows.Count -gt 0) {
-            $stateDesc = $existsRow.Rows[0]['state_desc']
-            Write-Output "Found existing database '$DBName' in state '$stateDesc' — dropping..."
-            try {
-                Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
-            } catch {
-                Write-Output "SET SINGLE_USER warning (non-fatal): $($_.Exception.Message -replace '\r?\n.*','')"
-            }
-            Invoke-LocalSql -Query "DROP DATABASE [$DBName]"
-            Write-Output "Dropped existing database '$DBName'."
-        }
-
-        Write-Output "Restoring full backup..."
-        Invoke-LocalSql -Query "
-RESTORE DATABASE [$DBName]
-FROM DISK='$BackupShare\${DBName}_full.bak'
-WITH NORECOVERY, REPLACE,
-MOVE '$DBName'       TO 'D:\SQLData\$DBName.mdf',
-MOVE '${DBName}_log' TO 'D:\SQLLog\${DBName}_log.ldf'" -Timeout 300
-        Write-Output "Full backup restored with NORECOVERY."
-
-        Invoke-LocalSql -Query "RESTORE LOG [$DBName] FROM DISK='$BackupShare\${DBName}_log.bak' WITH NORECOVERY" -Timeout 120
-        Write-Output "Log backup restored with NORECOVERY."
-    }
-
-    # Join replica to AG
     $inReplica = Invoke-LocalSql -Query "
 SELECT r.replica_server_name
 FROM sys.availability_replicas r
 JOIN sys.availability_groups g ON r.group_id = g.group_id
 WHERE g.name = '$AGName' AND r.replica_server_name = @@SERVERNAME"
-
     if ($inReplica.Rows.Count -eq 0) {
         try {
             Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] JOIN"
             Write-Output "Replica joined AG '$AGName'."
         } catch {
-            if ($_.Exception.Message -notmatch 'already exists') { throw }
-            Write-Output "Replica already joined to AG '$AGName' (caught on join) - continuing."
+            if ($_.Exception.Message -notmatch 'already exists|already joined') { throw }
+            Write-Output "Replica already joined to AG '$AGName'."
         }
     } else {
         Write-Output "Replica already joined to AG '$AGName'."
     }
 
-    # Join database to AG
-    try {
-        Invoke-LocalSql -Query "ALTER DATABASE [$DBName] SET HADR AVAILABILITY GROUP = [$AGName]"
-        Write-Output "Database '$DBName' joined to AG."
-    } catch {
-        $msg = $_.Exception.Message -replace '\r?\n.*',''
-        if ($msg -match 'already') {
-            Write-Output "Database '$DBName' already joined to AG (skipped)."
-        } else {
-            throw
+    if ($IsContained) {
+        try {
+            Invoke-LocalSql -Query "ALTER AVAILABILITY GROUP [$AGName] GRANT CREATE ANY DATABASE"
+            Write-Output "Granted CREATE ANY DATABASE to Contained AG '$AGName'."
+        } catch {
+            if ($_.Exception.Message -notmatch 'already') { throw }
+            Write-Output "CREATE ANY DATABASE already granted — continuing."
         }
     }
 
-} -ArgumentList $TestDatabase, $backupShare, $AGName, $invokeLocalSqlDef.ToString() -ErrorAction Stop |
+} -ArgumentList $AGName, $invokeLocalSqlDef.ToString(), $global:ContainedAG -ErrorAction Stop |
     ForEach-Object { Write-Log "[$SQL2VMName] $_" INFO }
 #endregion
 
@@ -469,6 +305,88 @@ WHERE ag.name = '$AGName'"
         ForEach-Object { Write-Log "[$SQL1VMName] AG Health: $_" INFO }
 } catch {
     Write-Log "[$SQL1VMName] AG health check failed (non-fatal — AG was configured successfully): $($_.Exception.Message -replace '\r?\n.*','')" WARN
+}
+#endregion
+
+#region Create labadmin logins
+# Server-level login on each node — for direct connections to SQL1/SQL2.
+foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
+    Write-Log "[$vmName] Creating server-level login '$LabAdminUser'..." INFO
+    Invoke-Command -VMName $vmName -Credential $domainAdminCred -ScriptBlock {
+        param($SqlUser, $SqlPass, $InvokeLocalSqlDef)
+        . ([scriptblock]::Create($InvokeLocalSqlDef))
+
+        $escapedPass = $SqlPass -replace "'","''"
+        try {
+            Invoke-LocalSql -Query "CREATE LOGIN [$SqlUser] WITH PASSWORD = '$escapedPass', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF"
+            Write-Output "Created server-level login '$SqlUser'."
+        } catch {
+            if ($_.Exception.Message -notmatch 'already exists') { throw }
+            $existing = Invoke-LocalSql -Query "SELECT type FROM sys.server_principals WHERE name = '$SqlUser' COLLATE SQL_Latin1_General_CP1_CI_AS"
+            if ($existing.Rows.Count -gt 0 -and [string]$existing.Rows[0]['type'] -eq 'S') {
+                Invoke-LocalSql -Query "ALTER LOGIN [$SqlUser] WITH PASSWORD = '$escapedPass', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF"
+                Write-Output "Server-level login '$SqlUser' already exists - password confirmed."
+            } else {
+                $t = if ($existing.Rows.Count -gt 0) { [string]$existing.Rows[0]['type'] } else { 'unknown' }
+                Write-Output "Principal '$SqlUser' already exists as type '$t' - skipping."
+            }
+        }
+
+        $isSA = Invoke-LocalSql -Query "SELECT 1 AS r FROM sys.server_role_members rm JOIN sys.server_principals rp ON rm.role_principal_id = rp.principal_id JOIN sys.server_principals mp ON rm.member_principal_id = mp.principal_id WHERE rp.name = 'sysadmin' AND mp.name = '$SqlUser'"
+        if ($isSA.Rows.Count -eq 0) {
+            try {
+                Invoke-LocalSql -Query "ALTER SERVER ROLE [sysadmin] ADD MEMBER [$SqlUser]"
+                Write-Output "Granted sysadmin to '$SqlUser'."
+            } catch {
+                if ($_.Exception.Message -notmatch 'already') { throw }
+                Write-Output "sysadmin already granted to '$SqlUser'."
+            }
+        } else {
+            Write-Output "sysadmin already granted to '$SqlUser'."
+        }
+
+    } -ArgumentList $LabAdminUser, $LabAdminPassword, $invokeLocalSqlDef.ToString() -ErrorAction Stop |
+        ForEach-Object { Write-Log "[$vmName] $_" INFO }
+}
+
+# Contained AG: also create the login via the listener so the Contained AG's replication
+# context manages it. This is in addition to the per-node creates above.
+if ($global:ContainedAG) {
+    Write-Log "[$SQL1VMName] Creating server-level login '$LabAdminUser' via listener (Contained AG context)..." INFO
+    Invoke-Command -VMName $SQL1VMName -Credential $domainAdminCred -ScriptBlock {
+        param($ListenerName, $ListenerPort, $SqlUser, $SqlPass, $InvokeLocalSqlDef)
+        . ([scriptblock]::Create($InvokeLocalSqlDef))
+
+        $escapedPass = $SqlPass -replace "'","''"
+        try {
+            Invoke-LocalSql -Query "CREATE LOGIN [$SqlUser] WITH PASSWORD = '$escapedPass', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF" `
+                -Server "$ListenerName,$ListenerPort"
+            Write-Output "Created login '$SqlUser' via listener."
+        } catch {
+            if ($_.Exception.Message -notmatch 'already exists') { throw }
+            $existing = Invoke-LocalSql -Query "SELECT type FROM sys.server_principals WHERE name = '$SqlUser' COLLATE SQL_Latin1_General_CP1_CI_AS" `
+                -Server "$ListenerName,$ListenerPort"
+            if ($existing.Rows.Count -gt 0 -and [string]$existing.Rows[0]['type'] -eq 'S') {
+                Invoke-LocalSql -Query "ALTER LOGIN [$SqlUser] WITH PASSWORD = '$escapedPass', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF" `
+                    -Server "$ListenerName,$ListenerPort"
+                Write-Output "Login '$SqlUser' already exists via listener - password confirmed."
+            } else {
+                $t = if ($existing.Rows.Count -gt 0) { [string]$existing.Rows[0]['type'] } else { 'unknown' }
+                Write-Output "Principal '$SqlUser' exists as type '$t' via listener - skipping create/alter."
+            }
+        }
+
+        try {
+            Invoke-LocalSql -Query "ALTER SERVER ROLE [sysadmin] ADD MEMBER [$SqlUser]" `
+                -Server "$ListenerName,$ListenerPort"
+            Write-Output "Granted sysadmin to '$SqlUser' via listener."
+        } catch {
+            if ($_.Exception.Message -notmatch 'already') { throw }
+            Write-Output "sysadmin already granted to '$SqlUser' via listener."
+        }
+
+    } -ArgumentList $ListenerName, $ListenerPort, $LabAdminUser, $LabAdminPassword, $invokeLocalSqlDef.ToString() -ErrorAction Stop |
+        ForEach-Object { Write-Log "[$SQL1VMName] Listener login: $_" INFO }
 }
 #endregion
 

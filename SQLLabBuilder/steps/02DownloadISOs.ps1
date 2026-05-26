@@ -5,10 +5,11 @@
 
 STRATEGY:
     Windows Server 2025  - direct ISO download via BITS from Microsoft Evaluation Center.
-    SQL Server 2022/2025 - download the small (~4 MB) evaluation bootstrapper EXE, then
-                           run it silently with /ACTION=Download /MEDIATYPE=ISO so it pulls
-                           the full ISO straight to $ISOPath with no interactive GUI.
-                           The bootstrapper output file is renamed to the expected name.
+    SQL Server 2019/2022/2025 - download the small (~5 MB) Developer edition setup EXE
+                           directly from download.microsoft.com via BITS, then launch it
+                           so the user can click Download Media > ISO in the UI.
+                           The script polls for the resulting ISO, renames it to the
+                           expected filename, and continues automatically.
 
 FALLBACK:
     If any automated download fails the script prints clear manual instructions and enters
@@ -27,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $cpFile = Join-Path $CheckpointPath "step-02.done"
 if (Test-Path $cpFile) {
     Write-Log "Step 02 checkpoint found - verifying ISO files are present..." INFO
-    $sqlISOName = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
+    $sqlISOName = switch ($global:SQLVersion) { "2019" { $SQL2019ISOName } "2025" { $SQL2025ISOName } default { $SQL2022ISOName } }
     $missingISO = $false
     foreach ($isoFile in @($WinServerISOName, $sqlISOName)) {
         $isoFullPath = Join-Path $ISOPath $isoFile
@@ -165,84 +166,114 @@ if ((Test-Path $wsDestPath) -and (Get-Item $wsDestPath).Length -gt 0) {
 
 #region SQL Server ISO
 
-$sqlISOName         = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
+$sqlISOName         = switch ($global:SQLVersion) { "2019" { $SQL2019ISOName } "2025" { $SQL2025ISOName } default { $SQL2022ISOName } }
 $sqlDestPath        = Join-Path $ISOPath $sqlISOName
-$sqlBootstrapperUrl = if ($global:SQLVersion -eq "2025") { $SQL2025BootstrapperUrl } else { $SQL2022BootstrapperUrl }
-$sqlEvalPageUrl     = "https://www.microsoft.com/en-us/evalcenter/evaluate-sql-server-$($global:SQLVersion)"
+$sqlBootstrapperUrl = switch ($global:SQLVersion) { "2019" { $SQL2019BootstrapperUrl } "2025" { $SQL2025BootstrapperUrl } default { $SQL2022BootstrapperUrl } }
+$sqlDownloadPageUrl = "https://www.microsoft.com/en-us/sql-server/sql-server-downloads"
 
 if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath).Length -gt 0) {
     $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
-    Write-Log "SQL Server $($global:SQLVersion) ISO already present ($sizeGB GB) - skipping." SUCCESS
+    Write-Log "SQL Server $($global:SQLVersion) Developer ISO already present ($sizeGB GB) - skipping." SUCCESS
 } else {
-    Write-Log "Acquiring SQL Server $($global:SQLVersion) evaluation ISO via bootstrapper..." INFO
+    Write-Log "Acquiring SQL Server $($global:SQLVersion) Developer setup EXE..." INFO
 
-    $bootstrapperPath       = Join-Path $ISOPath "SQLBootstrapper-$($global:SQLVersion).exe"
-    $bootstrapperDownloaded = Invoke-FileDownload -Url $sqlBootstrapperUrl -Destination $bootstrapperPath `
-        -DisplayName "SQL Server $($global:SQLVersion) Bootstrapper"
+    $setupExePath       = Join-Path $ISOPath "SQL$($global:SQLVersion)-SSEI-Dev.exe"
+    $setupExeDownloaded = Invoke-FileDownload -Url $sqlBootstrapperUrl -Destination $setupExePath `
+        -DisplayName "SQL Server $($global:SQLVersion) Developer setup EXE" -MinSizeBytes 1MB
 
     $bootstrapperSucceeded = $false
 
-    if ($bootstrapperDownloaded) {
-        Write-Log "Running bootstrapper silently - downloading full ISO to: $ISOPath" INFO
-        Write-Log "  This transfers ~1.5 GB; allow 10-30 min depending on connection speed." WARN
-
+    if ($setupExeDownloaded) {
+        # Attempt 1: silent unattended download — bootstrapper supports /ACTION=Download /QUIET
+        Write-Log "Attempting silent ISO download (no GUI)..." INFO
+        $silentArgs = "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
         try {
-            # Snapshot existing ISOs so we can identify which file the bootstrapper creates
-            $isosBefore = Get-ChildItem -Path $ISOPath -Filter "*.iso" -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty Name
-
-            $proc = Start-Process -FilePath $bootstrapperPath `
-                -ArgumentList "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /MEDIAPATH=`"$ISOPath`" /MEDIATYPE=ISO" `
-                -Wait -PassThru
-
-            if ($proc.ExitCode -ne 0) {
-                throw "Bootstrapper exited with code $($proc.ExitCode)."
-            }
-
-            # Locate the newly created ISO (not in the before-snapshot, non-zero size)
-            $newISO = Get-ChildItem -Path $ISOPath -Filter "*.iso" -ErrorAction SilentlyContinue |
-                Where-Object { ($isosBefore -notcontains $_.Name) -and ($_.Length -gt 0) } |
-                Select-Object -First 1
-
-            # Secondary search: any SQLServerYEAR*.iso that is not already our target name
-            if (-not $newISO) {
-                $newISO = Get-ChildItem -Path $ISOPath -Filter "SQLServer$($global:SQLVersion)*.iso" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -ne $sqlISOName -and $_.Length -gt 0 } |
-                    Select-Object -First 1
-            }
-
-            if ($newISO) {
-                if ($newISO.FullName -ne $sqlDestPath) {
-                    Rename-Item -Path $newISO.FullName -NewName $sqlISOName -Force
-                    Write-Log "Renamed '$($newISO.Name)' to '$sqlISOName'." INFO
-                }
-                $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
-                Write-Log "SQL Server $($global:SQLVersion) ISO ready ($sizeGB GB)." SUCCESS
-                $bootstrapperSucceeded = $true
-            } else {
-                throw "Bootstrapper exited 0 but no new ISO was found in: $ISOPath"
-            }
-
+            $proc = Start-Process -FilePath $setupExePath -ArgumentList $silentArgs -Wait -PassThru -ErrorAction Stop
+            Write-Log "Bootstrapper exited (code $($proc.ExitCode)) - checking for ISO..." INFO
         } catch {
-            Write-Log "Bootstrapper approach failed: $_" WARN
-        } finally {
-            if (Test-Path $bootstrapperPath) {
-                Remove-Item $bootstrapperPath -Force -ErrorAction SilentlyContinue
+            Write-Log "Silent launch failed: $_ - will try interactive." WARN
+        }
+
+        # Check if silent download produced the ISO (either at target path or needs rename)
+        if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath -ErrorAction SilentlyContinue).Length -gt 100MB) {
+            $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
+            Write-Log "Silent download succeeded: $sqlDestPath ($sizeGB GB)" SUCCESS
+            $bootstrapperSucceeded = $true
+        } else {
+            $newISO = Get-ChildItem -Path $ISOPath -Filter "*.iso" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne $sqlISOName -and $_.Name -ne $WinServerISOName -and $_.Length -gt 100MB } |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($newISO) {
+                Rename-Item -Path $newISO.FullName -NewName $sqlISOName -Force -ErrorAction Stop
+                Write-Log "Silent download: renamed '$($newISO.Name)' to '$sqlISOName'." INFO
+                $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
+                Write-Log "SQL Server $($global:SQLVersion) Developer ISO ready ($sizeGB GB)." SUCCESS
+                $bootstrapperSucceeded = $true
             }
+        }
+
+        # Attempt 2: interactive — open the GUI and wait for user to click 'Download Media'
+        if (-not $bootstrapperSucceeded) {
+            Write-Log "Silent download did not produce an ISO - launching interactive setup..." WARN
+            Start-Process -FilePath $setupExePath
+
+            $divider = "  " + ("-" * 64)
+            Write-Host ""
+            Write-Host $divider -ForegroundColor Yellow
+            Write-Host "  COMPLETE THE DOWNLOAD IN THE SETUP WINDOW" -ForegroundColor Yellow
+            Write-Host $divider -ForegroundColor Yellow
+            Write-Host "  The SQL Server $($global:SQLVersion) Developer setup has launched." -ForegroundColor White
+            Write-Host "  Follow these steps in the window:" -ForegroundColor White
+            Write-Host "    1. Click 'Download Media'" -ForegroundColor Cyan
+            Write-Host "    2. Under Format, select 'ISO'" -ForegroundColor White
+            Write-Host "    3. Set the download location to:" -ForegroundColor White
+            Write-Host "       $ISOPath" -ForegroundColor Cyan
+            Write-Host "    4. Click Download and wait for it to complete" -ForegroundColor White
+            Write-Host "  The script detects the ISO and renames it automatically." -ForegroundColor DarkGray
+            Write-Host "  Press Ctrl+C to abort the build." -ForegroundColor DarkGray
+            Write-Host $divider -ForegroundColor Yellow
+            Write-Host ""
+
+            while (-not $bootstrapperSucceeded) {
+                if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath -ErrorAction SilentlyContinue).Length -gt 100MB) {
+                    $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
+                    Write-Log "ISO detected: $sqlDestPath ($sizeGB GB)" SUCCESS
+                    $bootstrapperSucceeded = $true
+                    break
+                }
+                $newISO = Get-ChildItem -Path $ISOPath -Filter "*.iso" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -ne $sqlISOName -and $_.Name -ne $WinServerISOName -and $_.Length -gt 100MB } |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($newISO) {
+                    Rename-Item -Path $newISO.FullName -NewName $sqlISOName -Force -ErrorAction Stop
+                    Write-Log "Renamed '$($newISO.Name)' to '$sqlISOName'." INFO
+                    $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
+                    Write-Log "SQL Server $($global:SQLVersion) Developer ISO ready ($sizeGB GB)." SUCCESS
+                    $bootstrapperSucceeded = $true
+                    break
+                }
+                Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Waiting for ISO download to complete..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds 30
+            }
+        }
+
+        if (Test-Path $setupExePath) {
+            Remove-Item $setupExePath -Force -ErrorAction SilentlyContinue
+            Write-Log "Setup EXE cleaned up." INFO
         }
     }
 
     if (-not $bootstrapperSucceeded) {
         Write-Host ""
-        Write-Host "  Automated download failed for SQL Server $($global:SQLVersion)." -ForegroundColor Yellow
-        Write-Host "  Download the ISO manually:" -ForegroundColor Yellow
-        Write-Host "    1. Go to: $sqlEvalPageUrl" -ForegroundColor Cyan
-        Write-Host "    2. Fill out the evaluation form and download the installer EXE." -ForegroundColor White
-        Write-Host "    3. Run the EXE and choose 'Download Media'." -ForegroundColor White
-        Write-Host "    4. Select ISO format and set the download path to:" -ForegroundColor White
+        Write-Host "  Setup EXE download failed. Complete the steps below manually:" -ForegroundColor Yellow
+        Write-Host "    1. Go to: $sqlDownloadPageUrl" -ForegroundColor Cyan
+        Write-Host "    2. Under 'Free specialized edition', click 'Download now' next to Developer." -ForegroundColor White
+        Write-Host "    3. Run the downloaded EXE." -ForegroundColor White
+        Write-Host "    4. Click 'Download Media', select ISO, set the location to:" -ForegroundColor White
         Write-Host "       $ISOPath" -ForegroundColor Cyan
-        Write-Host "    5. After download, rename the ISO file to exactly: $sqlISOName" -ForegroundColor White
-        Write-Host "    6. The build will auto-continue once the file is detected." -ForegroundColor White
+        Write-Host "    5. Click Download and wait for it to complete." -ForegroundColor White
+        Write-Host "    6. Rename the ISO file to exactly: $sqlISOName" -ForegroundColor White
+        Write-Host "    7. The build will auto-continue once the file is detected." -ForegroundColor White
         Write-Host ""
         Wait-ForFile -Path $sqlDestPath -DisplayName $sqlISOName
     }
