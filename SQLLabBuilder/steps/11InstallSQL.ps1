@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIOSName\Administrator",
                        (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
 
-$sqlISOName = if ($global:SQLVersion -eq "2025") { $SQL2025ISOName } else { $SQL2022ISOName }
+$sqlISOName = switch ($global:SQLVersion) { "2019" { $SQL2019ISOName } "2025" { $SQL2025ISOName } default { $SQL2022ISOName } }
 $sqlISOHostPath = Join-Path $ISOPath $sqlISOName
 
 Start-LabVMs
@@ -301,6 +301,41 @@ function Install-SQLOnVM {
         Start-Sleep -Seconds 5
         $svc = Get-Service MSSQLSERVER
         Write-Output "MSSQLSERVER status: $($svc.Status)"
+    } -ErrorAction Stop | ForEach-Object { Write-Log "[$VMName] $_" INFO }
+    #endregion
+
+    #region Enable Agent XPs and start SQL Server Agent
+    Write-Log "[$VMName] Enabling Agent XPs and starting SQL Server Agent..." INFO
+    Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
+        $conn = New-Object System.Data.SqlClient.SqlConnection(
+            "Server=localhost;Database=master;Integrated Security=True;Connect Timeout=30")
+        try {
+            $conn.Open()
+            foreach ($q in @(
+                "EXEC sp_configure 'show advanced options', 1; RECONFIGURE WITH OVERRIDE",
+                "EXEC sp_configure 'Agent XPs', 1; RECONFIGURE WITH OVERRIDE"
+            )) {
+                $cmd = New-Object System.Data.SqlClient.SqlCommand($q, $conn)
+                $cmd.CommandTimeout = 30
+                [void]$cmd.ExecuteNonQuery()
+            }
+            Write-Output "Agent XPs enabled."
+        } finally {
+            if ($conn.State -eq 'Open') { $conn.Close() }
+        }
+
+        Set-Service SQLSERVERAGENT -StartupType Automatic -ErrorAction SilentlyContinue
+        $agentSvc = Get-Service SQLSERVERAGENT -ErrorAction SilentlyContinue
+        if ($agentSvc) {
+            if ($agentSvc.Status -ne 'Running') {
+                Start-Service SQLSERVERAGENT -ErrorAction Stop
+                Start-Sleep -Seconds 3
+                $agentSvc = Get-Service SQLSERVERAGENT
+            }
+            Write-Output "SQL Server Agent status: $($agentSvc.Status)"
+        } else {
+            Write-Output "SQLSERVERAGENT service not found — skipping."
+        }
     } -ErrorAction Stop | ForEach-Object { Write-Log "[$VMName] $_" INFO }
     #endregion
 

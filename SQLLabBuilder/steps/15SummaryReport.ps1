@@ -38,19 +38,26 @@ CREDENTIALS
   SQL SA Login:        sa / $SAPassword
   SQL Lab Login:       labadmin / $LabAdminPassword
 
-SSMS CONNECTION STRINGS (SQL Auth — use from your host machine)
-  SQL1 Direct:         $SQL1ComputerName,1433
-  SQL2 Direct:         $SQL2ComputerName,1433
-  AG Listener:         $ListenerName,1433
-  (Login: labadmin   Password: $LabAdminPassword)
+CONNECTING FROM YOUR HOST MACHINE
+  SQL Auth (works everywhere — listener and both nodes):
+    Server:    $ListenerName,1433  (or $SQL1ComputerName / $SQL2ComputerName for direct)
+    Login:     labadmin
+    Password:  $LabAdminPassword
 
-  NOTE: Connecting to the AG Listener via SQL auth routes to the primary replica.
-  For read-intent routing to the secondary, add ApplicationIntent=ReadOnly
-  to your connection string. This is fully supported with SQL authentication.
+  Windows Auth to individual nodes (NTLM via virtual switch):
+    Connect directly to $SQL1ComputerName or $SQL2ComputerName.
+    NTLM works if SSMS is running as your current Windows user and the host
+    can reach the VM over the Hyper-V internal switch (192.168.100.x).
 
-TEST DATABASE
-  Name:  $TestDatabase
-  In AG: Yes
+  Windows Auth to the AG Listener:
+    The listener requires Kerberos, which needs a domain-joined client.
+    From a non-domain host, use SQL auth (labadmin) as shown above.
+
+  Read-intent secondary routing (SQL auth):
+    Server: $ListenerName,1433  ApplicationIntent=ReadOnly
+    Login:  labadmin   Password: $LabAdminPassword
+
+  No databases are pre-added to the AG — add your own via the primary replica.
 
 HOSTS FILE ENTRIES (already added to $env:SystemRoot\System32\drivers\etc\hosts)
   $DCStaticIP   SQLLAB-DC       SQLLAB-DC.sqllab.local

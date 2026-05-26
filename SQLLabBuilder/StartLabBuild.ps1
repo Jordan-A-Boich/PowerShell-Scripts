@@ -5,25 +5,36 @@
     Orchestrates all steps to build a local Hyper-V SQL Server Always On lab.
 
 .PARAMETER SQLVersion
-    SQL Server version to install: "2022" (default) or "2025".
+    SQL Server Developer Edition version to install: "2019", "2022" (default), or "2025".
+
+.PARAMETER ContainedAG
+    Creates a Contained Availability Group instead of a standard AG.
+    Contained AGs replicate instance-level metadata (logins, SQL Agent jobs, etc.)
+    across replicas. Requires SQL Server 2022 or later; cannot be combined with
+    -SQLVersion 2019.
 
 .PARAMETER Teardown
-    Delegates to Teardown-Lab.ps1 instead of running the build.
+    Delegates to TeardownLab.ps1 instead of running the build.
 
 .PARAMETER Force
     Used with -Teardown to skip the confirmation prompt.
 
 .EXAMPLE
-    .\Start-LabBuild.ps1
-    .\Start-LabBuild.ps1 -SQLVersion 2025
-    .\Start-LabBuild.ps1 -Teardown
-    .\Start-LabBuild.ps1 -Teardown -Force
+    .\StartLabBuild.ps1
+    .\StartLabBuild.ps1 -SQLVersion 2019
+    .\StartLabBuild.ps1 -SQLVersion 2025
+    .\StartLabBuild.ps1 -SQLVersion 2022 -ContainedAG
+    .\StartLabBuild.ps1 -SQLVersion 2025 -ContainedAG
+    .\StartLabBuild.ps1 -Teardown
+    .\StartLabBuild.ps1 -Teardown -Force
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet("2022","2025")]
+    [ValidateSet("2019","2022","2025")]
     [string]$SQLVersion = "2022",
+
+    [switch]$ContainedAG,
 
     [switch]$Teardown,
 
@@ -45,7 +56,7 @@ if ($policy -eq 'Restricted') {
 
 #region Teardown shortcut
 if ($Teardown) {
-    $teardownScript = Join-Path $ScriptRoot "Teardown-Lab.ps1"
+    $teardownScript = Join-Path $ScriptRoot "TeardownLab.ps1"
     if (-not (Test-Path $teardownScript)) {
         Write-Error "Teardown-Lab.ps1 not found at: $teardownScript"
         exit 1
@@ -164,11 +175,18 @@ Write-Host "╔═════════════════════�
 Write-Host "║            SQL LAB BUILDER — Starting Build              ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
+if ($ContainedAG -and $SQLVersion -eq "2019") {
+    Write-Error "Contained Availability Groups require SQL Server 2022 or later. Remove -ContainedAG or use -SQLVersion 2022 or 2025."
+    exit 1
+}
+
 Write-Log "SQL Version selected: $SQLVersion" INFO
+Write-Log "Contained AG: $($ContainedAG.IsPresent)" INFO
 Write-Log "Script root: $ScriptRoot" INFO
 
-# Expose SQLVersion globally so step scripts can read it
-$global:SQLVersion = $SQLVersion
+# Expose build options globally so all dot-sourced step scripts can read them
+$global:SQLVersion   = $SQLVersion
+$global:ContainedAG  = $ContainedAG.IsPresent
 
 try {
     Invoke-Step "00Preflight.ps1"      "00 — Preflight checks"
