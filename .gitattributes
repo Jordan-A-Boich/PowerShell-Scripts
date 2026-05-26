@@ -1,0 +1,1 @@
+*.iso !text !filter !merge !diff

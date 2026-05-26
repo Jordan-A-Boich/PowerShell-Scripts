@@ -1,0 +1,4 @@
+# ISO files are downloaded on-the-fly to the user-selected lab drive ($ISOPath).
+# They must never be committed to this repo.
+*.iso
+ISOs/
