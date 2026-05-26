@@ -169,7 +169,7 @@ foreach ($target in $testTargets) {
         $color   = if ($result.TcpTestSucceeded) { "Green" } else { "Red" }
         $msg     = "  $($target.Label) ($($target.Address)):1433 — $status"
         Write-Host $msg -ForegroundColor $color
-        Write-Log $msg (if ($result.TcpTestSucceeded) { "SUCCESS" } else { "WARN" })
+        Write-Log $msg $(if ($result.TcpTestSucceeded) { "SUCCESS" } else { "WARN" })
         $connectResults += @{ Label = $target.Label; IP = $target.Address; Pass = $result.TcpTestSucceeded }
     } catch {
         Write-Log "  $($target.Label) — connectivity test error: $_" WARN

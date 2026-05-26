@@ -63,59 +63,84 @@ function Install-SQLOnVM {
     } -ErrorAction Stop
 
     if ($alreadyInstalled) {
-        Write-Log "[$VMName] SQL Server already installed — skipping." INFO
+        Write-Log "[$VMName] SQL Server already installed - skipping." INFO
         return
     }
+
+    #region Remove any existing DVD drive before disk operations
+    # A DVD drive left from a prior failed run can occupy D:\ and block data disk assignment.
+    $existingDvd = Get-VMDvdDrive -VMName $VMName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($existingDvd) {
+        Write-Log "[$VMName] Removing DVD drive before disk operations (prevents D:\ drive letter conflict)..." INFO
+        Remove-VMDvdDrive -VMName $VMName `
+            -ControllerNumber   $existingDvd.ControllerNumber `
+            -ControllerLocation $existingDvd.ControllerLocation `
+            -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    }
+    #endregion
 
     #region Initialize data disk (D:\) inside VM
     Write-Log "[$VMName] Initializing SQL data disk..." INFO
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
 
-        # D:\ already exists and formatted from a previous run - nothing to do
+        # Verify D:\ is an actual NTFS data volume before treating it as done.
+        # A DVD/ISO drive can also satisfy Test-Path "D:\" and must not be mistaken
+        # for the initialized data disk.
         if (Test-Path "D:\") {
-            Write-Output "D:\ already exists and formatted - skipping initialization."
-            return
+            $vol = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
+            if ($vol -and $vol.FileSystem -eq 'NTFS') {
+                Write-Output "D:\ is already NTFS - skipping disk initialization."
+                return
+            }
+            Write-Output "D:\ exists but FileSystem is '$($vol.FileSystem)' - not a data disk; will initialize the actual data disk."
         }
 
-        # Find the data disk: prefer Offline disks, then any RAW secondary disk
-        $dataDisk = Get-Disk | Where-Object { $_.OperationalStatus -eq 'Offline' } |
+        # Win32_DiskDrive.Index is the reliable disk number source in WS2025.
+        # MSFT_Disk.Number (used by Get-Disk) stays $null for Offline disks and
+        # sometimes even after online — Win32_DiskDrive does not have this problem.
+        $wmiDisk = Get-WmiObject -Class Win32_DiskDrive |
+            Where-Object { $_.Index -gt 0 } |
+            Sort-Object Index |
             Select-Object -First 1
 
-        if (-not $dataDisk) {
-            $dataDisk = Get-Disk | Where-Object {
-                $_.PartitionStyle -eq 'RAW' -and $_.Number -gt 0
-            } | Select-Object -First 1
+        if (-not $wmiDisk) {
+            throw "No secondary disk found via Win32_DiskDrive. Verify the data VHDX is attached to the VM."
         }
 
-        if (-not $dataDisk) {
-            throw "No offline or uninitialized data disk found and D:\ does not exist."
-        }
+        $diskNum = [int]$wmiDisk.Index
+        Write-Output "Found data disk: WMI Index=$diskNum  Size=$([math]::Round([long]$wmiDisk.Size/1GB,0)) GB"
 
-        $diskNum = $dataDisk.Number
-        Write-Output "Found data disk: Number=$diskNum  Size=$([math]::Round($dataDisk.Size/1GB,0)) GB  Status=$($dataDisk.OperationalStatus)  PartitionStyle=$($dataDisk.PartitionStyle)"
+        # Now we have a confirmed disk number — use Get-Disk for Storage operations.
+        $disk = Get-Disk -Number $diskNum -ErrorAction Stop
+        Write-Output "  Status=$($disk.OperationalStatus)  PartitionStyle=$($disk.PartitionStyle)"
 
-        # Bring the disk online before touching it - new VHDX-backed disks arrive Offline
-        if ($dataDisk.IsOffline) {
+        # Bring online if needed
+        if ($disk.IsOffline) {
             Write-Output "Bringing disk $diskNum online..."
-            Set-Disk -Number $diskNum -IsOffline $false -ErrorAction Stop
+            Set-Disk -Number $diskNum -IsOffline  $false -ErrorAction Stop
             Set-Disk -Number $diskNum -IsReadOnly $false -ErrorAction Stop
             Start-Sleep -Seconds 2
         }
 
         # Initialize to GPT only if still RAW
-        $partStyle = (Get-Disk -Number $diskNum).PartitionStyle
-        if ($partStyle -eq 'RAW') {
+        if ((Get-Disk -Number $diskNum).PartitionStyle -eq 'RAW') {
             Write-Output "Initializing disk $diskNum as GPT..."
             Initialize-Disk -Number $diskNum -PartitionStyle GPT -ErrorAction Stop
             Start-Sleep -Seconds 1
         }
 
-        # Create D:\ partition using explicit -DiskNumber (avoids pipeline null issues)
-        Write-Output "Creating partition on disk $diskNum..."
+        # Create the D:\ partition using the confirmed disk number
+        Write-Output "Creating D:\ partition on disk $diskNum..."
         New-Partition -DiskNumber $diskNum -DriveLetter D -UseMaximumSize -ErrorAction Stop |
             Format-Volume -FileSystem NTFS -NewFileSystemLabel "SQLData" -Confirm:$false -ErrorAction Stop | Out-Null
 
         Write-Output "Data disk initialized as D:\"
+
+        # Persist online state across reboots — without OnlineAll policy, Windows Server
+        # sets data VHDX disks offline on every VM restart, preventing SQL Server from starting.
+        Set-StorageSetting -NewDiskPolicy OnlineAll -ErrorAction SilentlyContinue
+        Write-Output "SAN policy set to OnlineAll."
 
     } -ErrorAction Stop | ForEach-Object { Write-Log "[$VMName] $_" INFO }
     #endregion
@@ -293,12 +318,13 @@ foreach ($pair in @(
         -SQLISOHostPath $sqlISOHostPath `
         -Credential   $domainAdminCred
 
-    # Eject SQL ISO from the VM's DVD drive after installation
+    # Remove the DVD drive entirely after installation so a future re-run does not
+    # find a stale DVD occupying D:\ when the data disk needs that letter.
     $dvd = Get-VMDvdDrive -VMName $pair.VM -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($dvd) {
-        Set-VMDvdDrive -VMName $pair.VM -ControllerNumber $dvd.ControllerNumber `
-            -ControllerLocation $dvd.ControllerLocation -Path $null -ErrorAction SilentlyContinue
-        Write-Log "[$($pair.VM)] SQL ISO ejected from DVD drive." INFO
+        Remove-VMDvdDrive -VMName $pair.VM -ControllerNumber $dvd.ControllerNumber `
+            -ControllerLocation $dvd.ControllerLocation -ErrorAction SilentlyContinue
+        Write-Log "[$($pair.VM)] DVD drive removed after SQL installation." INFO
     }
 }
 
