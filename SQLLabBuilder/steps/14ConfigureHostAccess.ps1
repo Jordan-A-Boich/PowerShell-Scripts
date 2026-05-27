@@ -92,15 +92,18 @@ function Add-LabSQLLogin {
             }
         }
 
-        $existing = Invoke-LocalSql -Query "SELECT name FROM sys.server_principals WHERE name='labadmin'"
-        if ($existing.Rows.Count -gt 0) {
-            Write-Output "Login 'labadmin' already exists."
-        } else {
+        try {
             Invoke-LocalSql -Query @"
 CREATE LOGIN [labadmin] WITH PASSWORD='$LoginPwd', CHECK_POLICY=OFF, CHECK_EXPIRATION=OFF;
 ALTER SERVER ROLE [sysadmin] ADD MEMBER [labadmin];
 "@
             Write-Output "Login 'labadmin' created with sysadmin role."
+        } catch {
+            if ($_.Exception.Message -match 'already exists') {
+                Write-Output "Login 'labadmin' already exists — skipping."
+            } else {
+                throw
+            }
         }
     } -ArgumentList $LabAdminPassword -ErrorAction Stop |
         ForEach-Object { Write-Log "[$VMName] $_" INFO }
