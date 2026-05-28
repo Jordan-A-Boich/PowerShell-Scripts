@@ -277,5 +277,5 @@ if ($deleteISOs -notin @('Y','y')) {
     Write-Host "  • Downloaded ISOs (preserved for future runs)" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "To rebuild the lab, run: .\Start-LabBuild.ps1" -ForegroundColor Cyan
+Write-Host "To rebuild the lab, run: .\StartLabBuild.ps1" -ForegroundColor Cyan
 Write-Host ""

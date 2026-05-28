@@ -66,7 +66,10 @@ if ($Teardown) {
     } else {
         & $teardownScript
     }
-    exit $LASTEXITCODE
+    # $LASTEXITCODE is only set after a native command; under StrictMode, reading
+    # it when unset throws. Default to 0 if the teardown ran no native commands.
+    $teardownExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    exit $teardownExit
 }
 #endregion
 
