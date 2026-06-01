@@ -118,6 +118,29 @@ function New-UnattendXml {
 }
 #endregion
 
+#region bcdboot helper
+# Writes UEFI boot files using the bcdboot.exe from the *applied image* (not the host).
+# The host (Win11 26200) is a newer build than the Server 2025 image (26100); the host's
+# bcdboot fails to copy the older boot binaries ("Failure when attempting to copy boot
+# files", exit 193 / ERROR_BAD_EXE_FORMAT).
+function Write-UefiBootFiles {
+    param([string]$VMName, [string]$WinDrive, [string]$EfiDrive)
+
+    $imageBcdboot = "${WinDrive}:\Windows\System32\bcdboot.exe"
+    if (-not (Test-Path $imageBcdboot)) {
+        throw "[$VMName] bcdboot.exe not found in applied image at $imageBcdboot"
+    }
+    Write-Log "[$VMName] Running bcdboot (from applied image) to write UEFI boot files to ${EfiDrive}:..." INFO
+    $bcdOut  = & $imageBcdboot "${WinDrive}:\Windows" /s "${EfiDrive}:" /f UEFI /l en-US 2>&1
+    $bcdExit = $LASTEXITCODE
+    $bcdOut | ForEach-Object { Write-Log "[$VMName] bcdboot: $_" INFO }
+    if ($bcdExit -ne 0) {
+        throw "[$VMName] bcdboot failed (exit $bcdExit). Output: $($bcdOut -join '; ')"
+    }
+    Write-Log "[$VMName] UEFI boot files written." SUCCESS
+}
+#endregion
+
 #region DISM offline image application
 function Install-WindowsToVHDX {
     param(
@@ -147,7 +170,29 @@ function Install-WindowsToVHDX {
 
         if ($installedPart) {
             Write-Log "[$VMName] Windows already present on disk — skipping DISM." SUCCESS
-            $pantherPath = "$($installedPart.DriveLetter):\Windows\Panther"
+            $winDrive = $installedPart.DriveLetter
+
+            # Locate the EFI System Partition and ensure it has a drive letter.
+            $efiPart = Get-Partition -DiskNumber $diskNum -ErrorAction SilentlyContinue |
+                       Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } |
+                       Select-Object -First 1
+            if (-not $efiPart) {
+                throw "[$VMName] Windows partition found but no EFI System Partition on disk $diskNum."
+            }
+            if (-not $efiPart.DriveLetter) {
+                $efiPart | Add-PartitionAccessPath -AssignDriveLetter | Out-Null
+                Start-Sleep -Seconds 2
+                $efiPart = Get-Partition -DiskNumber $diskNum -PartitionNumber $efiPart.PartitionNumber
+            }
+            $efiDrive = $efiPart.DriveLetter
+
+            # Repair boot files if a prior run applied the image but failed at bcdboot.
+            if (-not (Test-Path "${efiDrive}:\EFI\Microsoft\Boot\bootmgfw.efi")) {
+                Write-Log "[$VMName] EFI boot files missing — writing them now." WARN
+                Write-UefiBootFiles -VMName $VMName -WinDrive $winDrive -EfiDrive $efiDrive
+            }
+
+            $pantherPath = "${winDrive}:\Windows\Panther"
             if (-not (Test-Path "$pantherPath\unattend.xml")) {
                 New-Item -ItemType Directory -Path $pantherPath -Force | Out-Null
                 (New-UnattendXml -ComputerName $ComputerName -Password $AdminPassword) |
@@ -232,18 +277,8 @@ function Install-WindowsToVHDX {
         }
         Write-Log "[$VMName] DISM image applied successfully." SUCCESS
 
-        # Create UEFI boot configuration
-        Write-Log "[$VMName] Running bcdboot to write UEFI boot files to ${efiDrive}:..." INFO
-        $bcd = Start-Process bcdboot.exe -ArgumentList @(
-            "${winDrive}:\Windows",
-            "/s", "${efiDrive}:",
-            "/f", "UEFI",
-            "/l", "en-US"
-        ) -Wait -PassThru -NoNewWindow
-        if ($bcd.ExitCode -ne 0) {
-            throw "[$VMName] bcdboot failed (exit $($bcd.ExitCode))."
-        }
-        Write-Log "[$VMName] UEFI boot files written." SUCCESS
+        # Create UEFI boot configuration.
+        Write-UefiBootFiles -VMName $VMName -WinDrive $winDrive -EfiDrive $efiDrive
 
         # Inject unattend.xml for specialize and OOBE passes
         $pantherPath = "${winDrive}:\Windows\Panther"

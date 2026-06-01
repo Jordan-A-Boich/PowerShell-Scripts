@@ -186,7 +186,10 @@ if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath).Length -gt 0) {
     if ($setupExeDownloaded) {
         # Attempt 1: silent unattended download — bootstrapper supports /ACTION=Download /QUIET
         Write-Log "Attempting silent ISO download (no GUI)..." INFO
-        $silentArgs = "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
+        # /EDITION=Developer pins the download to Developer edition. Some SQL 2025 bootstrappers
+        # offer both Standard and Developer and otherwise default to Standard — and Standard does
+        # not support readable secondaries / contained AGs, which step 13 requires.
+        $silentArgs = "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /EDITION=Developer /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
         try {
             $proc = Start-Process -FilePath $setupExePath -ArgumentList $silentArgs -Wait -PassThru -ErrorAction Stop
             Write-Log "Bootstrapper exited (code $($proc.ExitCode)) - checking for ISO..." INFO
@@ -245,6 +248,9 @@ if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath).Length -gt 0) {
                     Where-Object { $_.Name -ne $sqlISOName -and $_.Name -ne $WinServerISOName -and $_.Length -gt 100MB } |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($newISO) {
+                    # Brief pause so the media wizard can finish validating/finalizing the ISO.
+                    # Without it the poll can grab the file mid-write and rename it too early.
+                    Start-Sleep -Seconds 10
                     Rename-Item -Path $newISO.FullName -NewName $sqlISOName -Force -ErrorAction Stop
                     Write-Log "Renamed '$($newISO.Name)' to '$sqlISOName'." INFO
                     $sizeGB = [math]::Round((Get-Item $sqlDestPath).Length / 1GB, 2)
