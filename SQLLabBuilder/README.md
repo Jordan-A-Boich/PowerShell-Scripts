@@ -53,16 +53,64 @@ No test database is pre-created. The AG is built as infrastructure only: endpoin
 
 ## Prerequisites
 
+### Operating System and Virtualization
+
 | Requirement | Detail |
 |-------------|--------|
-| OS | Windows 11 Pro or Enterprise (Home does not support Hyper-V) |
-| Hyper-V | Must be enabled in Windows Features; BIOS virtualization (VT-x or AMD-V) and SLAT required |
-| RAM | 16 GB minimum; 20 GB or more strongly recommended |
-| Disk | 150 GB free space on the target drive; SSD strongly recommended |
-| PowerShell | 5.1 or later (pre-installed on Windows 11) |
-| Run as | Administrator |
-| Internet | Required during step 02 to download the Windows Server 2025 ISO (~4.7 GB) |
-| SQL Server ISO | Developer Edition; may require manual download; see the ISO section below |
+| OS | Windows 11 Pro or Enterprise only. Home edition does not include Hyper-V and cannot run this lab. |
+| Hyper-V | Must be enabled in Windows Features: both `Microsoft-Hyper-V` and `Microsoft-Hyper-V-Management-PowerShell`. |
+| BIOS/UEFI | Hardware virtualization (Intel VT-x or AMD-V) and SLAT (Second Level Address Translation) must be enabled. Most CPUs from 2012 onward support SLAT. Check your BIOS settings if Hyper-V fails to enable. |
+| PowerShell | Version 5.1 or later. Pre-installed on all Windows 11 machines. |
+| Run as | Administrator. The script checks for elevation and stops immediately if not elevated. |
+
+### RAM
+
+16 GB installed is the minimum. 20 GB or more is strongly recommended.
+
+The lab runs three VMs simultaneously. Their combined memory ceiling is 10 GB (DC at 2 GB max, SQL1 and SQL2 at 4 GB max each). Windows 11 plus background processes typically consumes 4 to 6 GB on the host. On a 16 GB machine, expect pressure. On 20 GB or more, the build runs without swapping.
+
+The preflight check (step 00) warns and prompts before continuing if fewer than 10 GB of RAM are currently free.
+
+| VM | Min RAM | Max RAM |
+|----|---------|---------|
+| SQLLAB-DC | 512 MB | 2 GB |
+| SQLLAB-SQL1 | 1 GB | 4 GB |
+| SQLLAB-SQL2 | 1 GB | 4 GB |
+| Combined ceiling | | 10 GB |
+
+### Disk
+
+150 GB of free space is required on the drive you select during step 01. An SSD is strongly recommended. The build involves multiple OS installations, SQL Server setups, and restarts across three VMs. On a spinning disk, build time can exceed several hours and timeout thresholds may be hit during domain join and SQL install.
+
+All VHDXs are dynamically expanding, so they do not consume their full size immediately. The table below shows maximum sizes.
+
+| File | Max size |
+|------|----------|
+| SQLLAB-DC OS disk | 60 GB |
+| SQLLAB-SQL1 OS disk | 80 GB |
+| SQLLAB-SQL1 data disk | 40 GB |
+| SQLLAB-SQL2 OS disk | 80 GB |
+| SQLLAB-SQL2 data disk | 40 GB |
+| Windows Server 2025 ISO | ~4.7 GB |
+| SQL Server Developer ISO (one version) | ~5 to 7 GB |
+| Total potential usage | ~310 GB |
+
+### CPU
+
+Each VM is assigned 2 vCPUs, for 6 virtual cores across all three VMs. The host CPU must support hardware virtualization and SLAT (required by Hyper-V regardless of this lab). A quad-core or better physical CPU is recommended so the host remains responsive during the build.
+
+### Internet
+
+An active internet connection is required during step 02 to download:
+
+- Windows Server 2025 ISO (~4.7 GB) via BITS
+- SQL Server Developer Edition ISO via a silent bootstrapper (~5 to 7 GB depending on version)
+
+If the automatic download fails, the script provides manual fallback instructions.
+
+### PowerShell Modules
+
+The `SqlServer` PowerShell module is required and is installed automatically from the PowerShell Gallery during the preflight step if it is not already present.
 
 ---
 
