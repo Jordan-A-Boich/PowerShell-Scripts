@@ -74,25 +74,13 @@ if (-not (Get-Module -ListAvailable -Name SqlServer)) {
 #region 4. Password generation — write to config.ps1 if fields are blank
 Write-Log "Checking password configuration..." INFO
 
+# Simple, generic lab password used for all accounts when a field is blank.
+# Still satisfies Windows/AD/SQL complexity (upper + lower + digit + symbol) so
+# DC promotion and SQL install don't fail. This is a throwaway lab — not secret.
+$DefaultLabPassword = "SqlLab2025!"
+
 function New-LabPassword {
-    param([int]$Length = 18)
-    $upper   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    $lower   = 'abcdefghijklmnopqrstuvwxyz'
-    $digits  = '0123456789'
-    $special = '!@#$%^&*()-_=+'
-    $all     = $upper + $lower + $digits + $special
-    $rng     = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $bytes   = New-Object byte[] $Length
-    $rng.GetBytes($bytes)
-    $chars   = $bytes | ForEach-Object { $all[$_ % $all.Length] }
-    # Guarantee at least one of each class
-    $chars[0] = $upper[(Get-Random -Maximum $upper.Length)]
-    $chars[1] = $digits[(Get-Random -Maximum $digits.Length)]
-    $chars[2] = $special[(Get-Random -Maximum $special.Length)]
-    $chars[3] = $lower[(Get-Random -Maximum $lower.Length)]
-    # Shuffle
-    $shuffled = $chars | Sort-Object { Get-Random }
-    return -join $shuffled
+    return $DefaultLabPassword
 }
 
 $configContent = Get-Content -Path $configPath -Raw -ErrorAction Stop

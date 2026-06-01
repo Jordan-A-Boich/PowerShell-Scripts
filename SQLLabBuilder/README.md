@@ -1,6 +1,6 @@
 # SQLLabBuilder
 
-A fully automated PowerShell lab builder that provisions a production-style **SQL Server Always On Availability Group** environment on your local Windows 11 machine using Hyper-V. The entire stack — from bare VMs through Active Directory, Windows Failover Clustering, and SQL Server AG configuration — is built and configured by a single command.
+A fully automated PowerShell lab builder that provisions a production-style **SQL Server Always On Availability Group** environment on your local Windows 11 machine using Hyper-V. The entire stack, from bare VMs through Active Directory, Windows Failover Clustering, and SQL Server AG configuration, is built and configured by a single command.
 
 ---
 
@@ -39,7 +39,7 @@ SQLLabBuilder provisions three Hyper-V virtual machines joined into a fully func
 | Hyper-V switch | `SQLLabSwitch` (internal, NAT on `192.168.100.0/24`) |
 | Host vEthernet IP | `192.168.100.1` |
 | Windows Failover Cluster | `SQLLabCluster` at `192.168.100.20` |
-| Always On AG | `SQLLabAG` (no databases pre-added — add your own after the build) |
+| Always On AG | `SQLLabAG` (no databases pre-added; add your own after the build) |
 | AG Listener | `SQLLabListener` at `192.168.100.30:1433` |
 | SQL auth login | `labadmin` (sysadmin on both instances, reachable from host via SQL auth) |
 | SQL Server Agent | Enabled and set to Automatic start on both SQL nodes |
@@ -47,7 +47,7 @@ SQLLabBuilder provisions three Hyper-V virtual machines joined into a fully func
 | Hosts file entries | `SQLLAB-DC`, `SQLLAB-SQL1`, `SQLLAB-SQL2`, `SQLLabCluster`, `SQLLabListener` |
 | Firewall rule | Outbound TCP 1433 to `192.168.100.0/24` on the host |
 
-No test database is pre-created. The AG is built as infrastructure only — endpoints, AG object, listener, and both replicas joined. Add your own databases to the AG after the build.
+No test database is pre-created. The AG is built as infrastructure only: endpoints, AG object, listener, and both replicas joined. Add your own databases to the AG after the build.
 
 ---
 
@@ -92,14 +92,25 @@ No test database is pre-created. The AG is built as infrastructure only — endp
 
 ## Connecting from SSMS
 
-| Target | Server name | Auth | Login |
-|--------|-------------|------|-------|
-| Primary direct | `SQLLAB-SQL1,1433` | SQL Server Authentication | `labadmin` |
-| Secondary direct | `SQLLAB-SQL2,1433` | SQL Server Authentication | `labadmin` |
-| AG Listener (primary routing) | `SQLLabListener,1433` | SQL Server Authentication | `labadmin` |
-| AG Listener (read-only routing) | `SQLLabListener,1433` with `ApplicationIntent=ReadOnly` | SQL Server Authentication | `labadmin` |
+**Preferred method: SQL Server Authentication with the `labadmin` login.**
 
-The `labadmin` password is auto-generated on first run. Check `lab-summary.txt` or `$LabAdminPassword` in `config.ps1` for the value.
+Connect to any of the three SQL targets using SQL auth with these credentials:
+
+- **Login:** `labadmin`
+- **Password:** `SqlLab2025!`
+
+This is the recommended way to reach `SQLLAB-SQL1`, `SQLLAB-SQL2`, and `SQLLabListener` from your host machine. It works for both direct node connections and the AG Listener without requiring a domain-joined client.
+
+> This is a throwaway lab environment, so the password is intentionally simple and generic. There is no harm in it being public.
+
+| Target | Server name | Auth | Login | Password |
+|--------|-------------|------|-------|----------|
+| Primary direct | `SQLLAB-SQL1,1433` | SQL Server Authentication | `labadmin` | `SqlLab2025!` |
+| Secondary direct | `SQLLAB-SQL2,1433` | SQL Server Authentication | `labadmin` | `SqlLab2025!` |
+| AG Listener (primary routing) | `SQLLabListener,1433` | SQL Server Authentication | `labadmin` | `SqlLab2025!` |
+| AG Listener (read-only routing) | `SQLLabListener,1433` with `ApplicationIntent=ReadOnly` | SQL Server Authentication | `labadmin` | `SqlLab2025!` |
+
+The same `labadmin` / `SqlLab2025!` value is also recorded in `lab-summary.txt` and as `$LabAdminPassword` in `config.ps1`.
 
 ### Windows Authentication
 
@@ -164,14 +175,14 @@ Both grants are required for auto-seeding to be authorized when user databases a
 
 In a Contained AG, logins should be created through the listener so the AG's replication context manages them. The build creates the `labadmin` login in two places:
 
-1. **On each node directly** — for connecting to `SQLLAB-SQL1` and `SQLLAB-SQL2` individually.
-2. **Via the listener** — using the listener as the connection target so the Contained AG's replication mechanism picks up the login and propagates it.
+1. **On each node directly**: for connecting to `SQLLAB-SQL1` and `SQLLAB-SQL2` individually.
+2. **Via the listener**: using the listener as the connection target so the Contained AG's replication mechanism picks up the login and propagates it.
 
 This means `labadmin` works for listener connections as well as direct node connections without any additional manual setup.
 
 ### Adding databases to the AG
 
-No databases are pre-added. When you add a user database to a Contained AG, the AG uses auto-seeding (set up by the build) to replicate it to the secondary automatically — no manual backup and restore required. To add a database:
+No databases are pre-added. When you add a user database to a Contained AG, the AG uses auto-seeding (set up by the build) to replicate it to the secondary automatically, with no manual backup and restore required. To add a database:
 
 ```sql
 -- On the primary (connect via listener or SQLLAB-SQL1 directly)
@@ -195,10 +206,10 @@ ALTER AVAILABILITY GROUP [SQLLabAG] ADD DATABASE [YourDatabase]
 
 The Windows Server 2025 ISO downloads automatically via BITS. The SQL Server Developer Edition ISO is acquired in two stages:
 
-**Stage 1 — Silent download (automatic, no GUI):**
+**Stage 1: Silent download (automatic, no GUI):**
 The script downloads the SQL Server Developer setup EXE (~5 MB) from `download.microsoft.com` and runs it with `/ACTION=Download /QUIET` to pull the full ISO without any interactive UI. If this succeeds, the build continues automatically.
 
-**Stage 2 — Interactive fallback:**
+**Stage 2: Interactive fallback:**
 If the silent download does not produce an ISO, the setup window launches and you complete a few clicks while the script waits:
 
 1. Click **Download Media**.
@@ -324,14 +335,14 @@ All settings live in `config.ps1`. Most defaults work without modification. The 
 
 ### Passwords
 
-Passwords are **auto-generated** by step 00 on the first run and written back into `config.ps1`. Do not edit them manually; they are referenced by name throughout all subsequent steps.
+All accounts use a single simple, generic password: `SqlLab2025!`. This is a throwaway lab environment, so the password is intentionally easy and safe to be public. The four password fields are pre-set in `config.ps1`. If any field is left blank, step 00 fills it with the same `SqlLab2025!` value on the next run. The fields are referenced by name throughout all subsequent steps.
 
-| Variable | Used for |
-|----------|----------|
-| `$AdminPassword` | Local and domain Administrator account on all VMs |
-| `$SQLServiceAccountPassword` | `SQLLAB\sqlsvc` domain service account |
-| `$SAPassword` | SQL Server `sa` login |
-| `$LabAdminPassword` | `labadmin` SQL login used for host SSMS access |
+| Variable | Value | Used for |
+|----------|-------|----------|
+| `$AdminPassword` | `SqlLab2025!` | Local and domain Administrator account on all VMs |
+| `$SQLServiceAccountPassword` | `SqlLab2025!` | `SQLLAB\sqlsvc` domain service account |
+| `$SAPassword` | `SqlLab2025!` | SQL Server `sa` login |
+| `$LabAdminPassword` | `SqlLab2025!` | `labadmin` SQL login used for host SSMS access |
 
 ---
 
@@ -341,7 +352,7 @@ Each step is a standalone script in the `steps\` folder. Steps are executed in o
 
 | Step | Script | Description |
 |------|--------|-------------|
-| 00 | `00Preflight.ps1` | Verifies Administrator elevation, Hyper-V features, available RAM, and SqlServer PS module; auto-generates passwords on first run |
+| 00 | `00Preflight.ps1` | Verifies Administrator elevation, Hyper-V features, available RAM, and SqlServer PS module; fills any blank password field in `config.ps1` with the default `SqlLab2025!` |
 | 01 | `01SelectDrive.ps1` | Prompts for target drive selection and creates the `SQLLabBuilder` folder structure |
 | 02 | `02DownloadISOs.ps1` | Downloads Windows Server 2025 ISO via BITS; downloads SQL Server Developer ISO via silent bootstrapper first, with interactive GUI fallback if silent download fails |
 | 03 | `03CreateVMSwitch.ps1` | Creates the Hyper-V internal switch, the NAT rule, and assigns the static IP to the host vEthernet adapter |
@@ -367,7 +378,7 @@ SQLLabBuilder/
 +-- README.md
 +-- StartLabBuild.ps1         Main orchestration entry point
 +-- TeardownLab.ps1           Full lab teardown and host cleanup
-+-- config.ps1                Centralized configuration and auto-generated passwords
++-- config.ps1                Centralized configuration and lab passwords
 +-- steps/
     +-- 00Preflight.ps1
     +-- 01SelectDrive.ps1
@@ -401,7 +412,7 @@ The script first attempts a fully silent download. If that fails, the setup GUI 
 Confirm Hyper-V is fully enabled in Windows Features and that your BIOS has virtualization (VT-x or AMD-V) and SLAT enabled. Run `Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V` to check the current state.
 
 **Step 09 fails with "Could not retrieve network topology".**
-This is a timing issue in single-NIC Hyper-V labs. Step 09 includes a 30-second pre-delay and up to three retry attempts with 30-second gaps. If it still fails, re-run the build — the checkpoint system resumes from step 09.
+This is a timing issue in single-NIC Hyper-V labs. Step 09 includes a 30-second pre-delay and up to three retry attempts with 30-second gaps. If it still fails, re-run the build; the checkpoint system resumes from step 09.
 
 **Login failed for `labadmin` when connecting to the AG Listener.**
 The listener requires Kerberos for Windows Authentication from non-domain clients. Always use **SQL Server Authentication** with `labadmin` when connecting to the listener from your host machine. Windows Authentication works only if your machine is domain-joined.
