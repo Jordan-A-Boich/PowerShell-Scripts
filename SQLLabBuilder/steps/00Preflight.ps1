@@ -71,6 +71,63 @@ if (-not (Get-Module -ListAvailable -Name SqlServer)) {
 }
 #endregion
 
+#region Lab subnet conflict check
+# Only needed before the VM switch exists — once step-03 is done the vEthernet adapter
+# already owns the subnet and there is nothing left to conflict with.
+$step03Done = $CheckpointPath -and (Test-Path (Join-Path $CheckpointPath "step-03.done") -ErrorAction SilentlyContinue)
+if (-not $step03Done) {
+    Write-Log "Checking for subnet conflicts with existing network adapters..." INFO
+
+    $currentBase = ($LabSubnet -split '\.' | Select-Object -First 3) -join '.'
+
+    # Any active adapter (physical, VPN, etc.) that already holds an IP in the target /24
+    # would cause routing confusion on the host once the lab vEthernet is added.
+    $conflicting = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.InterfaceAlias -notmatch 'Loopback' -and
+            $_.InterfaceAlias -ne "vEthernet ($SwitchName)" -and
+            $_.IPAddress      -like "$currentBase.*"
+        }
+
+    if ($conflicting) {
+        $adapterList = ($conflicting |
+            ForEach-Object { "'$($_.InterfaceAlias)' ($($_.IPAddress))" }) -join ', '
+        Write-Log "Subnet conflict: $currentBase.0/$LabPrefix overlaps with your existing network on $adapterList." WARN
+        Write-Log "Auto-selecting a non-conflicting subnet to protect your network connectivity..." INFO
+
+        # Candidate /24 bases tried in order — first free one wins.
+        $candidates = @("192.168.200","192.168.150","192.168.210","10.100.100","10.200.100")
+        $newBase = $null
+        foreach ($base in $candidates) {
+            $taken = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.InterfaceAlias -notmatch 'Loopback' -and
+                    $_.InterfaceAlias -ne "vEthernet ($SwitchName)" -and
+                    $_.IPAddress      -like "$base.*"
+                }
+            if (-not $taken) { $newBase = $base; break }
+        }
+
+        if (-not $newBase) {
+            Write-Log "All candidate subnets conflict with existing adapters." ERROR
+            Write-Log "Manually edit the Network region in config.ps1 to a free /24 subnet, then re-run." ERROR
+            throw "No available subnet found — edit config.ps1 manually."
+        }
+
+        $subnetContent = Get-Content -Path $configPath -Raw -ErrorAction Stop
+        $subnetContent = $subnetContent -replace [regex]::Escape($currentBase), $newBase
+        Set-Content -Path $configPath -Value $subnetContent -Encoding UTF8 -ErrorAction Stop
+        . $configPath
+
+        Write-Log "config.ps1 updated: lab subnet changed from $currentBase.0/24 to $newBase.0/$LabPrefix." SUCCESS
+    } else {
+        Write-Log "Lab subnet ($LabSubnet/$LabPrefix) is clear — no conflicts detected." SUCCESS
+    }
+} else {
+    Write-Log "VM switch already created (step-03 done) — subnet conflict check skipped." INFO
+}
+#endregion
+
 #region 4. Password generation — write to config.ps1 if fields are blank
 Write-Log "Checking password configuration..." INFO
 

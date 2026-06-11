@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    SQLLabBuilder — Centralized configuration.
+    SQLLabBuilder Centralized configuration.
     Single source of truth for all names, IPs, passwords, domain info, and paths.
     All step scripts dot-source this file. No magic strings in step files.
 
@@ -98,6 +98,7 @@ $LabAdminPassword          = "SqlLab2025!"
 # (Listener requires Kerberos for Windows auth; use runas /netonly for Windows auth instead.)
 $LabAdminUser = "labadmin"
 #endregion
+
 
 
 
