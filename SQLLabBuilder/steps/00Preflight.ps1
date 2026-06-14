@@ -30,10 +30,50 @@ Write-Log "Running as Administrator." SUCCESS
 
 #region 2. Hyper-V check
 Write-Log "Checking Hyper-V features..." INFO
-$hvFeature   = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Hyper-V" -ErrorAction SilentlyContinue
-$hvPSFeature = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Hyper-V-Management-PowerShell" -ErrorAction SilentlyContinue
 
-if ($hvFeature.State -ne 'Enabled' -or $hvPSFeature.State -ne 'Enabled') {
+# We need both the Hyper-V platform and the Hyper-V PowerShell module enabled.
+# The "official" query is Get-WindowsOptionalFeature, but the underlying DISM/CBS
+# COM provider is corrupt on some hosts and hangs ~2 min before throwing a
+# *terminating* "Class not registered" (0x80040154) exception that -ErrorAction
+# can't suppress. Win32_OptionalFeature (CIM) returns the same data, is fast, and
+# works even when DISM is broken — so we query it first and only fall back to
+# DISM if CIM itself is unavailable.
+function Test-FeatureEnabled {
+    param([string[]]$FeatureName)
+
+    # Primary: Win32_OptionalFeature. InstallState 1 = Enabled.
+    try {
+        $cim = Get-CimInstance -ClassName Win32_OptionalFeature -ErrorAction Stop |
+            Where-Object { $FeatureName -contains $_.Name }
+        if ($cim | Where-Object { $_.InstallState -eq 1 }) { return $true }
+        # CIM answered but none of the features are enabled — authoritative, no fallback.
+        if ($cim) { return $false }
+    } catch {
+        Write-Log "Win32_OptionalFeature query failed ($($_.Exception.Message.Trim())); trying DISM." WARN
+    }
+
+    # Fallback: DISM optional-feature provider (may hang/throw on corrupt hosts).
+    try {
+        foreach ($name in $FeatureName) {
+            $f = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction Stop
+            if ($f.State -eq 'Enabled') { return $true }
+        }
+    } catch {
+        Write-Log "Get-WindowsOptionalFeature unavailable ($($_.Exception.Message.Trim()))." WARN
+    }
+
+    return $false
+}
+
+$hvEnabled = Test-FeatureEnabled -FeatureName @('Microsoft-Hyper-V','Microsoft-Hyper-V-All')
+
+# The PowerShell module is what the build drives Hyper-V with; treat the module
+# actually being importable as authoritative for the management-tools side.
+$hvPSEnabled = (Test-FeatureEnabled -FeatureName @('Microsoft-Hyper-V-Management-PowerShell')) -or
+               [bool](Get-Module -ListAvailable -Name Hyper-V) -and
+               [bool](Get-Command Get-VM -ErrorAction SilentlyContinue)
+
+if (-not $hvEnabled -or -not $hvPSEnabled) {
     Write-Log "Hyper-V is not fully enabled on this host." ERROR
     Write-Log "Enable it with: Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All" ERROR
     Write-Log "Or via Server Manager > Add Roles and Features > Hyper-V." ERROR

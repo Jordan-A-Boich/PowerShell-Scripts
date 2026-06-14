@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQLLabBuilder Centralized configuration.
@@ -98,6 +98,7 @@ $LabAdminPassword          = "SqlLab2025!"
 # (Listener requires Kerberos for Windows auth; use runas /netonly for Windows auth instead.)
 $LabAdminUser = "labadmin"
 #endregion
+
 
 
 
