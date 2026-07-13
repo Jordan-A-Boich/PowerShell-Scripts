@@ -38,7 +38,17 @@ The build takes **30–45 minutes** depending on hardware. A summary report with
 
 ## Starting the Lab After a Shutdown
 
-Run the same command you used to build the lab. The checkpoint system skips every already-completed step and just starts the VMs. SQL Server is configured for automatic startup, so it will be available within a minute or two of the VMs coming online.
+Use `-Start` to power the **whole lab** back on in one command:
+
+```powershell
+.\StartLabBuild.ps1 -Start
+```
+
+This starts the domain controller first (the SQL nodes need it for DNS, the cluster witness, and Kerberos), then every built cluster's SQL nodes — the primary AG **and any add-cluster AGs** — and finally brings each node's data disk online and starts the cluster service, SQL Server, and SQL Agent. It's idempotent: already-running VMs and already-online disks are left alone. No version or flags needed — it discovers what's built.
+
+> Prefer `-Start` once you have more than one cluster. Re-running the plain build command (below) only knows about the primary three VMs, so it won't start the added clusters' nodes.
+
+Alternatively, for a **single-cluster** lab you can still re-run the same command you built with. The checkpoint system skips every already-completed step and just starts the primary VMs. SQL Server is configured for automatic startup, so it will be available within a minute or two of the VMs coming online.
 
 ```powershell
 # Use the same version and flags you used during the original build
@@ -238,7 +248,8 @@ Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V
 ```
 SQLLabBuilder/
 ├── README.md
-├── StartLabBuild.ps1       # Main entry point (build, teardown, add-cluster)
+├── StartLabBuild.ps1       # Main entry point (build, start, teardown, add-cluster)
+├── StartLab.ps1            # Power the whole lab on (all clusters) after a shutdown
 ├── AddCluster.ps1          # Add another 2-node AG on its own WSFC
 ├── TeardownLab.ps1         # Lab teardown (primary + added clusters)
 ├── config.ps1              # All names, IPs, passwords, paths + Get-LabClusterContext

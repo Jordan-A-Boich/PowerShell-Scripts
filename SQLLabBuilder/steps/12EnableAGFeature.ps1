@@ -34,86 +34,10 @@ if (Test-Path $cpFile) {
     if ($laterDone) {
         Write-Log "Step 12 checkpoint found and later steps confirmed - verifying SQL nodes are healthy after VM resume..." INFO
 
-        $resumeRecoveryBlock = {
-            $vol = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not ($vol -and $vol.FileSystem -eq 'NTFS' -and (Test-Path 'D:\'))) {
-                Write-Output 'D:\ not accessible - locating and bringing data disk online...'
-                $wmiDisk = Get-WmiObject -Class Win32_DiskDrive |
-                    Where-Object { $_.Index -gt 0 } | Sort-Object Index | Select-Object -First 1
-                if (-not $wmiDisk) { throw 'No secondary data disk found via Win32_DiskDrive.' }
-                $diskNum = [int]$wmiDisk.Index
-                $disk = Get-Disk -Number $diskNum -ErrorAction Stop
-                if ($disk.IsOffline) {
-                    Set-Disk -Number $diskNum -IsOffline $false -ErrorAction Stop
-                    Set-Disk -Number $diskNum -IsReadOnly $false -ErrorAction SilentlyContinue
-                }
-                Set-StorageSetting -NewDiskPolicy OnlineAll -ErrorAction SilentlyContinue
-                $waited = 0
-                while (-not (Test-Path 'D:\') -and $waited -lt 30) {
-                    Start-Sleep -Seconds 3; $waited += 3
-                }
-                if (-not (Test-Path 'D:\')) { throw 'D:\ not accessible after bring-online attempt.' }
-                Write-Output "D:\ brought online (waited ${waited}s)."
-            } else {
-                Write-Output 'D:\ already online.'
-            }
-
-            foreach ($sqlDir in @('D:\SQLData','D:\SQLLog','D:\SQLBackup','D:\SQLTemp')) {
-                if (-not (Test-Path $sqlDir)) {
-                    New-Item -ItemType Directory -Path $sqlDir -Force | Out-Null
-                    Write-Output "Recreated missing directory: $sqlDir"
-                }
-            }
-
-            $clusSvc = Get-Service ClusSvc -ErrorAction SilentlyContinue
-            if ($clusSvc -and $clusSvc.Status -ne 'Running') {
-                Write-Output 'ClusSvc stopped - starting...'
-                Start-Service ClusSvc -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 8
-                Write-Output "ClusSvc status: $((Get-Service ClusSvc -ErrorAction SilentlyContinue).Status)"
-            } else {
-                Write-Output "ClusSvc: $($clusSvc.Status)"
-            }
-
-            $sqlSvc = Get-Service MSSQLSERVER -ErrorAction SilentlyContinue
-            if (-not $sqlSvc) { throw 'MSSQLSERVER service not found - verify step 11 completed.' }
-            if ($sqlSvc.Status -ne 'Running') {
-                Write-Output "MSSQLSERVER is '$($sqlSvc.Status)' - starting..."
-                Start-Service MSSQLSERVER -ErrorAction Stop
-                $sqlDeadline = (Get-Date).AddMinutes(2)
-                while ((Get-Date) -lt $sqlDeadline) {
-                    Start-Sleep -Seconds 5
-                    $sqlStatus = (Get-Service MSSQLSERVER -ErrorAction SilentlyContinue).Status
-                    if ($sqlStatus -eq 'Running') { Write-Output 'MSSQLSERVER started.'; break }
-                    Write-Output "Waiting for MSSQLSERVER ($sqlStatus)..."
-                }
-                if ((Get-Service MSSQLSERVER -ErrorAction SilentlyContinue).Status -ne 'Running') {
-                    throw 'MSSQLSERVER did not reach Running state within 2 minutes.'
-                }
-            } else {
-                Write-Output 'MSSQLSERVER already running.'
-            }
-
-            $agentSvc = Get-Service SQLSERVERAGENT -ErrorAction SilentlyContinue
-            if ($agentSvc -and $agentSvc.Status -ne 'Running') {
-                Write-Output 'SQLSERVERAGENT stopped - starting...'
-                Start-Service SQLSERVERAGENT -ErrorAction SilentlyContinue
-                Write-Output "SQLSERVERAGENT status: $((Get-Service SQLSERVERAGENT -ErrorAction SilentlyContinue).Status)"
-            } elseif ($agentSvc) {
-                Write-Output 'SQLSERVERAGENT already running.'
-            }
-        }
-
+        # Bring each node's data disk online and restart SQL/cluster services if a
+        # VM restart left them down. Shared with StartLab.ps1 (see LabFunctions.ps1).
         foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
-            Write-Log "[$vmName] Checking data disk and SQL Server health..." INFO
-            try {
-                $nodeOutput = Invoke-Command -VMName $vmName -Credential $domainAdminCred `
-                    -ScriptBlock $resumeRecoveryBlock -ErrorAction Stop
-                $nodeOutput | ForEach-Object { Write-Log "[$vmName] $_" INFO }
-                Write-Log "[$vmName] SQL node healthy." SUCCESS
-            } catch {
-                Write-Log "[$vmName] Recovery warning: $_ - if SQL is still down, re-run the script." WARN
-            }
+            Restore-LabNodeHealth -VMName $vmName -Credential $domainAdminCred | Out-Null
         }
 
         Write-Log 'Step 12 skipped - SQL node recovery complete.' SUCCESS

@@ -13,6 +13,14 @@
     across replicas. Requires SQL Server 2022 or later; cannot be combined with
     -SQLVersion 2019.
 
+.PARAMETER Start
+    Delegates to StartLab.ps1 to power on the ENTIRE lab at once after a shutdown —
+    the domain controller plus every built cluster's SQL nodes (primary AG and any
+    add-cluster AGs) — bringing each node's data disk online and starting the
+    cluster service, SQL Server, and SQL Agent. Use this instead of re-running the
+    build once you have more than one cluster, since a plain re-run only starts the
+    primary three VMs.
+
 .PARAMETER Teardown
     Delegates to TeardownLab.ps1 instead of running the build.
 
@@ -34,6 +42,7 @@
     .\StartLabBuild.ps1 -SQLVersion 2025 -ContainedAG
     .\StartLabBuild.ps1 -AddCluster
     .\StartLabBuild.ps1 -AddCluster -ContainedAG
+    .\StartLabBuild.ps1 -Start
     .\StartLabBuild.ps1 -Teardown
     .\StartLabBuild.ps1 -Teardown -Force
 #>
@@ -46,6 +55,8 @@ param(
     [switch]$ContainedAG,
 
     [switch]$AddCluster,
+
+    [switch]$Start,
 
     [switch]$Teardown,
 
@@ -81,6 +92,19 @@ if ($Teardown) {
     # it when unset throws. Default to 0 if the teardown ran no native commands.
     $teardownExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
     exit $teardownExit
+}
+#endregion
+
+#region Start-lab shortcut
+if ($Start) {
+    $startScript = Join-Path $ScriptRoot "StartLab.ps1"
+    if (-not (Test-Path $startScript)) {
+        Write-Error "StartLab.ps1 not found at: $startScript"
+        exit 1
+    }
+    & $startScript
+    $startExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    exit $startExit
 }
 #endregion
 
