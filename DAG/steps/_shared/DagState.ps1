@@ -69,6 +69,7 @@ function New-DagProgressRecord {
         FullBackupUtc   = $null
         FullCheckpointLsn = $null
         RestoredOn      = @()      # replicas that have the FULL applied
+        Restores        = @()      # restore receipts; see New-DagRestoreReceipt
         JoinedOn        = @()      # replicas where the db is joined to the forwarder AG
         Completed       = $false
     }
@@ -97,3 +98,70 @@ function Set-DagProgress {
     $Plan.Progress = @($others + $Record)
     Save-DagPlan -Plan $Plan
 }
+
+#region ── Restore receipts ──────────────────────────────────────────────────
+
+<#
+    One receipt per (replica, backup set). It is written BEFORE the restore starts and
+    completed only when the restore returns, which is what makes the two states
+    distinguishable afterwards:
+
+      StartedUtc, no CompletedUtc  the restore was interrupted. Re-restoring is correct,
+                                   and the resume path does exactly that.
+      StartedUtc and CompletedUtc  the restore finished. If SQL Server nevertheless says
+                                   the FULL is not applied, something is undoing it, and
+                                   restoring it again would only start the loop over.
+
+    That second case is the whole reason this exists: a multi-terabyte restore must never
+    be issued twice on the strength of a check that has already been shown to be wrong.
+#>
+
+function New-DagRestoreReceipt {
+    param(
+        [Parameter(Mandatory)][string]$Replica,
+        [Parameter(Mandatory)][string]$BackupSetGuid,
+        [string]$LastLsn
+    )
+    [pscustomobject]@{
+        Replica       = $Replica
+        BackupSetGuid = $BackupSetGuid
+        LastLsn       = $LastLsn
+        StartedUtc    = (Get-Date).ToUniversalTime().ToString('o')
+        CompletedUtc  = $null
+    }
+}
+
+function Get-DagRestoreReceipt {
+    <#
+    .OUTPUTS
+        The receipt for this backup set on this replica, or $null.
+    #>
+    param(
+        [psobject]$Record,
+        [Parameter(Mandatory)][string]$Replica,
+        [Parameter(Mandatory)][string]$BackupSetGuid
+    )
+    if (-not $Record) { return $null }
+    $m = @($Record.Restores | Where-Object { $_.Replica -eq $Replica -and $_.BackupSetGuid -eq $BackupSetGuid })
+    if ($m.Count -gt 0) { return $m[0] }
+    return $null
+}
+
+function Set-DagRestoreReceipt {
+    <#
+    .SYNOPSIS
+        Upserts one receipt into the database's progress record and persists the plan.
+    #>
+    param(
+        [Parameter(Mandatory)][psobject]$Plan,
+        [Parameter(Mandatory)][psobject]$Record,
+        [Parameter(Mandatory)][psobject]$Receipt
+    )
+    $others = @($Record.Restores | Where-Object {
+        -not ($_.Replica -eq $Receipt.Replica -and $_.BackupSetGuid -eq $Receipt.BackupSetGuid)
+    })
+    $Record.Restores = @($others + $Receipt)
+    Set-DagProgress -Plan $Plan -Record $Record
+}
+
+#endregion

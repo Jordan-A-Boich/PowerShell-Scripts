@@ -133,10 +133,33 @@ SET HADR AVAILABILITY GROUP = $(ConvertTo-DagQuotedName $Plan.ForwarderAgName);
     }
 }
 
+function Get-DagProbeLogFile {
+    <#
+    .SYNOPSIS
+        Log backups from this database's chain, oldest first, for Test-DagFullBackupApplied.
+    .DESCRIPTION
+        Oldest first on purpose: the oldest log in the share is the one most likely to
+        predate the FULL, and a log that predates the FULL draws the cleanest possible
+        answer out of SQL Server (4326, "too early to apply" — which can only be true if
+        the FULL is already down). Enumerated as the target replica sees the share, since
+        it is the replica that will read them.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Instance,
+        [Parameter(Mandatory)][string]$LogDirectory,
+        [int]$Limit = 5
+    )
+    $files = @(Get-DagRemoteFile -Instance $Instance -Path $LogDirectory -Pattern '*.trn')
+    if ($files.Count -eq 0) { return @() }
+    return @($files | Sort-Object LastWriteTime | Select-Object -First $Limit | ForEach-Object { $_.FullPath })
+}
+
 function Invoke-DagSeedManual {
     param(
         [Parameter(Mandatory)][psobject]$Plan,
-        [Parameter(Mandatory)][hashtable]$InstanceInfo
+        [Parameter(Mandatory)][hashtable]$InstanceInfo,
+        [int]$TimeoutHours = 24,
+        [switch]$Force
     )
 
     Write-DagBanner 'STEP 5 of 7 — MANUAL SEEDING'
@@ -188,8 +211,15 @@ function Invoke-DagSeedManual {
 
         #region 2. Restore the FULL onto every forwarder replica
         foreach ($r in $fwReplicas) {
+            $probeLogs = @(Get-DagProbeLogFile -Instance $r -LogDirectory $logDir)
+
             Restore-DagFullBackup -Instance $r -DatabaseName $db -Files $fullFiles `
-                -InstanceInfo $InstanceInfo[$r] -Header $header
+                -InstanceInfo $InstanceInfo[$r] -Header $header `
+                -Plan $Plan -ProbeLogFiles $probeLogs -Force:$Force
+
+            # Re-read: Restore-DagFullBackup writes its receipt through Set-DagProgress,
+            # so the record we captured before the restore is now stale.
+            $rec = Get-DagProgress -Plan $Plan -DatabaseName $db
             if ($rec.RestoredOn -notcontains $r) {
                 $rec.RestoredOn = @($rec.RestoredOn) + $r
                 Set-DagProgress -Plan $Plan -Record $rec
@@ -225,11 +255,18 @@ function Invoke-DagSeedManual {
         #endregion
 
         #region 5. Confirm the database is moving data on the forwarder
+        <#
+            Driven by the same budget as the rest of the seed, not a fixed 15 minutes. A
+            multi-terabyte database has a large redo backlog to work through before it
+            reports SYNCHRONIZING, and a wait that expires early throws the run away at
+            the one moment when everything is in fact fine — sending the operator back
+            through a re-run, and a re-run is where re-restores come from.
+        #>
         foreach ($r in $fwReplicas) {
-            $ok = Wait-DagCondition -Activity "[$db] synchronizing on $r" -TimeoutSeconds 900 -PollSeconds 10 `
+            $ok = Wait-DagCondition -Activity "[$db] synchronizing on $r" -TimeoutSeconds ($TimeoutHours * 3600) -PollSeconds 15 `
                 -Condition { Test-DagDatabaseArrivedOnForwarder -Instance $r -AgName $Plan.ForwarderAgName -DatabaseName $db }
             if (-not $ok) {
-                throw "[$db] joined [$($Plan.ForwarderAgName)] on '$r' but never reached a synchronizing state. Check the SQL Server error log on '$r'."
+                throw "[$db] joined [$($Plan.ForwarderAgName)] on '$r' but never reached a synchronizing state within $TimeoutHours hour(s). Check the SQL Server error log on '$r'."
             }
         }
 

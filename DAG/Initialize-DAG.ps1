@@ -42,6 +42,16 @@
 .PARAMETER RemoveLogBackupJob
     Remove the transaction log backup job created for manual seeding, then exit.
 
+.PARAMETER Force
+    Restore a FULL backup even when the script cannot prove the target needs it, or has
+    already recorded that exact backup as restored there.
+
+    Without it, either situation stops the run. That is deliberate: re-restoring a
+    multi-terabyte FULL is the most expensive and most destructive thing this tool can do,
+    and a script that does it whenever a check comes back uncertain is one bad check away
+    from an endless restore loop. Supply -Force when you have looked at the target and know
+    the copy sitting there is unusable.
+
 .EXAMPLE
     .\Initialize-DAG.ps1
 
@@ -61,7 +71,9 @@ param(
 
     [switch]$HealthOnly,
 
-    [switch]$RemoveLogBackupJob
+    [switch]$RemoveLogBackupJob,
+
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -137,8 +149,15 @@ function Restore-DagPlanShape {
         $Plan.$p = ConvertTo-DagArray $Plan.$p
     }
     foreach ($rec in $Plan.Progress) {
+        # Restores was added after the first plans were written; a state file from before
+        # then has no such property, and under StrictMode reading one that does not exist
+        # is a terminating error rather than $null.
+        if ($rec.PSObject.Properties.Name -notcontains 'Restores') {
+            $rec | Add-Member -NotePropertyName Restores -NotePropertyValue @()
+        }
         $rec.FullBackupFiles = ConvertTo-DagArray $rec.FullBackupFiles
         $rec.RestoredOn      = ConvertTo-DagArray $rec.RestoredOn
+        $rec.Restores        = ConvertTo-DagArray $rec.Restores
         $rec.JoinedOn        = ConvertTo-DagArray $rec.JoinedOn
     }
     return $Plan
@@ -237,13 +256,13 @@ try {
     $pre = Invoke-DagPreflight -Plan $plan
     Save-DagPlan -Plan $plan
 
-    Invoke-DagEnsureAgDatabases -Plan $plan -InstanceInfo $pre.InstanceInfo
+    Invoke-DagEnsureAgDatabases -Plan $plan -InstanceInfo $pre.InstanceInfo -Force:$Force
     Invoke-DagCreate -Plan $plan
 
     if ($plan.SeedingMode -eq 'AUTOMATIC') {
         Invoke-DagSeedAutomatic -Plan $plan -TimeoutHours $SeedTimeoutHours
     } else {
-        Invoke-DagSeedManual -Plan $plan -InstanceInfo $pre.InstanceInfo
+        Invoke-DagSeedManual -Plan $plan -InstanceInfo $pre.InstanceInfo -TimeoutHours $SeedTimeoutHours -Force:$Force
     }
 
     Invoke-DagFinalize -Plan $plan

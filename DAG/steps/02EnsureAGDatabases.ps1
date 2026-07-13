@@ -103,7 +103,8 @@ function Add-DagDatabaseToGlobalAg {
     param(
         [Parameter(Mandatory)][psobject]$Plan,
         [Parameter(Mandatory)][string]$DatabaseName,
-        [Parameter(Mandatory)][hashtable]$InstanceInfo
+        [Parameter(Mandatory)][hashtable]$InstanceInfo,
+        [switch]$Force
     )
 
     $gp = $Plan.GlobalPrimaryReplica
@@ -145,9 +146,14 @@ ADD DATABASE $(ConvertTo-DagQuotedName $DatabaseName);
         $fullFiles = @(New-DagFullBackup -Instance $gp -DatabaseName $DatabaseName -Directory $fullDir -StripeCount $Plan.StripeCount)
         $header    = Get-DagBackupHeader -Instance $gp -Files $fullFiles
 
+        # No log backups exist for this chain yet, so there is nothing to probe with. That
+        # is fine on the path that gets here — the database is being added to the AG for
+        # the first time, so a copy already sitting in RESTORING on a secondary is genuinely
+        # unexplained, and Restore-DagFullBackup is right to stop and say so rather than
+        # overwrite it.
         foreach ($sec in $Plan.GlobalSecondaries) {
             Restore-DagFullBackup -Instance $sec -DatabaseName $DatabaseName -Files $fullFiles `
-                -InstanceInfo $InstanceInfo[$sec] -Header $header
+                -InstanceInfo $InstanceInfo[$sec] -Header $header -Plan $Plan -Force:$Force
         }
 
         Invoke-DagSql -Instance $gp -QueryTimeout 300 -Activity 'add database to AG' -Query @"
@@ -176,7 +182,8 @@ SET HADR AVAILABILITY GROUP = $(ConvertTo-DagQuotedName $Plan.GlobalAgName);
 function Invoke-DagEnsureAgDatabases {
     param(
         [Parameter(Mandatory)][psobject]$Plan,
-        [Parameter(Mandatory)][hashtable]$InstanceInfo
+        [Parameter(Mandatory)][hashtable]$InstanceInfo,
+        [switch]$Force
     )
 
     Write-DagBanner 'STEP 3 of 7 — ALIGN SEEDING MODES AND SOURCE DATABASES'
@@ -206,7 +213,7 @@ function Invoke-DagEnsureAgDatabases {
             continue
         }
 
-        $fullFiles = @(Add-DagDatabaseToGlobalAg -Plan $Plan -DatabaseName $db -InstanceInfo $InstanceInfo)
+        $fullFiles = @(Add-DagDatabaseToGlobalAg -Plan $Plan -DatabaseName $db -InstanceInfo $InstanceInfo -Force:$Force)
 
         if ($fullFiles.Count -gt 0) {
             # Let the forwarder restore reuse this backup rather than take a second full.

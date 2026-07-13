@@ -86,6 +86,17 @@ function Invoke-DagSql {
         [string]$Activity = 'query'
     )
 
+    # A BACKUP or RESTORE must never reach the retry path. 'Timeout expired' counts as
+    # transient, and a client-side timeout on a long RESTORE means SQL Server took an
+    # ATTENTION and rolled the whole restore back — so a retry reissues it from zero, hits
+    # the same timeout at the same point, and loops. That is the exact shape of the
+    # multi-terabyte re-restore loop this tool is built to avoid. Long operations belong in
+    # Invoke-DagLongOp, which sets CommandTimeout = 0 and does not retry.
+    # HEADERONLY / FILELISTONLY / VERIFYONLY are reads and stay retryable.
+    if ($Retry -and $Query -match '(?im)^\s*(BACKUP\s+(DATABASE|LOG)|RESTORE\s+(DATABASE|LOG))\b') {
+        throw 'Invoke-DagSql -Retry must not be used for BACKUP or RESTORE — use Invoke-DagLongOp.'
+    }
+
     $splat = Get-DagSqlSplat -Instance $Instance -Database $Database -QueryTimeout $QueryTimeout
     $splat['Query'] = $Query
 
@@ -127,6 +138,49 @@ function Get-DagScalar {
     $val = $rows[0].v
     if ($val -is [System.DBNull]) { return $null }
     return $val
+}
+
+function Get-DagSqlErrorNumber {
+    <#
+    .SYNOPSIS
+        Every SQL Server error number carried by an ErrorRecord.
+
+    .DESCRIPTION
+        RESTORE outcomes are classified by error NUMBER, never by message text. Message
+        text is localized — a German or Japanese instance returns the same 4319 in
+        entirely different words — and a matcher built on English strings fails open.
+        For this tool, failing open means "I could not tell", and historically that
+        meant "restore the multi-terabyte backup again".
+
+        A failed RESTORE reports several errors at once: the specific cause, then 3119
+        ("problems were identified while planning"), then 3013 ("terminating
+        abnormally"). The whole collection is returned, so callers look for the number
+        that carries the meaning rather than whichever one happens to surface first.
+
+        Falls back to scraping 'Msg NNNN' from the text, which is how the number
+        survives on the paths where Invoke-Sqlcmd has wrapped the SqlException.
+    #>
+    param([Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $numbers = New-Object System.Collections.Generic.List[int]
+
+    $ex = $ErrorRecord.Exception
+    while ($ex) {
+        if ($ex.PSObject.Properties.Name -contains 'Errors' -and $ex.Errors) {
+            foreach ($e in $ex.Errors) {
+                if ($e.PSObject.Properties.Name -contains 'Number') { $numbers.Add([int]$e.Number) }
+            }
+        }
+        $ex = $ex.InnerException
+    }
+
+    if ($numbers.Count -eq 0) {
+        foreach ($m in [regex]::Matches([string]$ErrorRecord.Exception.Message, '(?im)\bMsg\s+(\d{3,5})\b')) {
+            $numbers.Add([int]$m.Groups[1].Value)
+        }
+    }
+
+    return @($numbers)
 }
 
 function Test-DagConnection {
