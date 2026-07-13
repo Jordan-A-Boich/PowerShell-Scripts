@@ -53,6 +53,41 @@ Run the same command you used to build the lab. The checkpoint system skips ever
 
 ---
 
+## Adding Another Availability Group
+
+Once the base lab is built, you can add **another independent 2-node Always On AG on its own Windows Failover Cluster** — reusing the same domain controller, virtual switch, NAT, and `sqlsvc` service account. This is repeatable: each run adds the next cluster (2, then 3, ...).
+
+```powershell
+# Add the next AG (auto-detects the lab's SQL version and next free slot)
+.\StartLabBuild.ps1 -AddCluster
+
+# Add a Contained AG (SQL 2022/2025)
+.\StartLabBuild.ps1 -AddCluster -ContainedAG
+
+# Pin the SQL version or force a specific cluster index (advanced)
+.\AddCluster.ps1 -SQLVersion 2022
+.\AddCluster.ps1 -ClusterIndex 3
+```
+
+The base lab must already be built (the DC and primary AG must exist). Two **small** VMs are created (2 vCPU, 1–3 GB dynamic RAM, 64 GB OS + 20 GB data) — sized only to host the OS and run SQL, since no workload is expected. Like the main build, the add-cluster flow is checkpointed and resumable: re-run and it continues where it stopped.
+
+Each added cluster gets its own names and IPs, derived from its index:
+
+| Resource | Cluster 2 | Cluster 3 |
+|----------|-----------|-----------|
+| Nodes | `SQLLAB-SQL3` / `SQLLAB-SQL4` | `SQLLAB-SQL5` / `SQLLAB-SQL6` |
+| Node IPs | `.41` / `.42` | `.51` / `.52` |
+| WSFC | `SQLLabCluster2` (`.45`) | `SQLLabCluster3` (`.55`) |
+| AG | `SQLLabAG2` | `SQLLabAG3` |
+| Listener | `SQLLabListener2` (`.48:1433`) | `SQLLabListener3` (`.58:1433`) |
+| Witness | `\\SQLLAB-DC\ClusterWitness2` | `\\SQLLAB-DC\ClusterWitness3` |
+
+Connect exactly as with the primary AG — SQL auth (`labadmin`) to the new listener or nodes. A per-cluster summary is written to `<drive>:\SQLLabBuilder\logs\addcluster-cN-summary.txt`.
+
+> **RAM budget:** each added AG runs two more VMs. The base lab already uses ~10 GB across three VMs, so plan on roughly 4–6 GB more per added cluster. On a 16 GB host, one extra AG is realistic; more needs more RAM.
+
+---
+
 ## Teardown
 
 ```powershell
@@ -63,7 +98,7 @@ Run the same command you used to build the lab. The checkpoint system skips ever
 .\StartLabBuild.ps1 -Teardown -Force
 ```
 
-Teardown removes all three VMs and their VHDXs, the virtual switch, the NAT rule, the host vEthernet IP, the hosts file entries, and the firewall rule. ISOs are prompted separately. The `SQLLabBuilder` folder, logs, and `config.ps1` are preserved.
+Teardown removes **all** lab VMs and their VHDXs — the primary three plus any nodes from added clusters — along with the virtual switch, the NAT rule, the host vEthernet IP, every hosts-file block (primary and per-cluster), and the firewall rule. ISOs are prompted separately. The `SQLLabBuilder` folder, logs, and `config.ps1` are preserved.
 
 ---
 
@@ -203,15 +238,20 @@ Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V
 ```
 SQLLabBuilder/
 ├── README.md
-├── StartLabBuild.ps1       # Main entry point (build and teardown)
-├── TeardownLab.ps1         # Lab teardown
-├── config.ps1              # All names, IPs, passwords, paths
+├── StartLabBuild.ps1       # Main entry point (build, teardown, add-cluster)
+├── AddCluster.ps1          # Add another 2-node AG on its own WSFC
+├── TeardownLab.ps1         # Lab teardown (primary + added clusters)
+├── config.ps1              # All names, IPs, passwords, paths + Get-LabClusterContext
 └── steps/
+    ├── _shared/
+    │   └── LabFunctions.ps1  # Shared build functions (primary build + add-cluster)
     ├── 00Preflight.ps1
     ├── 01SelectDrive.ps1
     ├── ...
     └── 15SummaryReport.ps1
 ```
+
+The primary build steps (04–13) and `AddCluster.ps1` call the same functions in `steps/_shared/LabFunctions.ps1`, so there is one implementation of every heavy operation (Windows apply, SQL install, enable Always On, create WSFC, create AG).
 
 ---
 

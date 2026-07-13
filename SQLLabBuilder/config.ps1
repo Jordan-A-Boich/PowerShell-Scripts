@@ -99,6 +99,81 @@ $LabAdminPassword          = "SqlLab2025!"
 $LabAdminUser = "labadmin"
 #endregion
 
+#region Cluster contexts — primary + additional (add-cluster) AGs
+# The lab can host more than one independent 2-node Always On AG, each on its own
+# Windows Failover Cluster but sharing the single domain controller, virtual switch
+# and NAT. Get-LabClusterContext returns everything a build needs for a given
+# 1-based cluster index:
+#
+#   Index 1  = the primary cluster. Returns EXACTLY the values defined above, so the
+#              original build (steps 04-15) is byte-for-byte unchanged.
+#   Index N>1 = an add-cluster AG. Names and IPs are derived from N so any number of
+#              clusters can coexist without collisions (RAM permitting).
+#
+# IP layout on the lab /24 (base derived from the DC's subnet so it survives the
+# preflight subnet-conflict auto-adjust):
+#   .10 DC   .11/.12 primary nodes   .20 primary cluster   .30 primary listener
+#   Cluster N>1 gets a 10-address block starting at .40:  block = 40 + (N-2)*10
+#     nodes  = block+1, block+2     cluster = block+5     listener = block+8
+function Get-LabClusterContext {
+    param([Parameter(Mandatory)][int]$Index)
+
+    if ($Index -lt 1) { throw "Cluster index must be >= 1 (got $Index)." }
+
+    if ($Index -eq 1) {
+        return @{
+            Index         = 1
+            IsPrimary     = $true
+            Node1VMName   = $SQL1VMName
+            Node2VMName   = $SQL2VMName
+            Node1Computer = $SQL1ComputerName
+            Node2Computer = $SQL2ComputerName
+            Node1IP       = $SQL1StaticIP
+            Node2IP       = $SQL2StaticIP
+            ClusterName   = $ClusterName
+            ClusterIP     = $ClusterIP
+            AGName        = $AGName
+            ListenerName  = $ListenerName
+            ListenerIP    = $ListenerIP
+            WitnessShare  = $WitnessShare
+            HostsMarker   = "# SQLLabBuilder"     # matches existing base hosts block
+            CpSuffix      = ""
+        }
+    }
+
+    # Derive the subnet base (first three octets) from the DC IP so we honor any
+    # subnet that the preflight step auto-selected to avoid a conflict.
+    $subnetBase = ($DCStaticIP -split '\.')[0..2] -join '.'
+    $block      = 40 + ($Index - 2) * 10
+    if (($block + 8) -gt 254) {
+        throw "Cluster index $Index would exceed the lab /24 address range. Use a lower index."
+    }
+
+    # Node numbering continues past the primary pair: cluster N uses SQL(2N-1)/SQL(2N).
+    $n1 = (2 * $Index) - 1
+    $n2 = (2 * $Index)
+
+    return @{
+        Index         = $Index
+        IsPrimary     = $false
+        Node1VMName   = "SQLLab-SQL$n1"
+        Node2VMName   = "SQLLab-SQL$n2"
+        Node1Computer = "SQLLAB-SQL$n1"
+        Node2Computer = "SQLLAB-SQL$n2"
+        Node1IP       = "$subnetBase.$($block + 1)"
+        Node2IP       = "$subnetBase.$($block + 2)"
+        ClusterName   = "SQLLabCluster$Index"
+        ClusterIP     = "$subnetBase.$($block + 5)"
+        AGName        = "SQLLabAG$Index"
+        ListenerName  = "SQLLabListener$Index"
+        ListenerIP    = "$subnetBase.$($block + 8)"
+        WitnessShare  = "ClusterWitness$Index"
+        HostsMarker   = "# SQLLabBuilder-c$Index"
+        CpSuffix      = "-c$Index"
+    }
+}
+#endregion
+
 
 
 

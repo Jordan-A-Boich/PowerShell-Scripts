@@ -67,6 +67,23 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 #endregion
 
+#region Build full lab VM list (primary + any added clusters)
+# Start with the three primary VMs, then discover add-cluster nodes (SQL3/SQL4, ...)
+# via Get-LabClusterContext so a full teardown removes every AG the lab created.
+$LabVMNames = @($DCVMName, $SQL1VMName, $SQL2VMName)
+if (Get-Command Get-LabClusterContext -ErrorAction SilentlyContinue) {
+    for ($i = 2; $i -le 50; $i++) {
+        $c = Get-LabClusterContext -Index $i
+        foreach ($vn in @($c.Node1VMName, $c.Node2VMName)) {
+            if ((Get-VM -Name $vn -ErrorAction SilentlyContinue) -and ($LabVMNames -notcontains $vn)) {
+                $LabVMNames += $vn
+            }
+        }
+    }
+}
+$addedVMs = $LabVMNames | Where-Object { $_ -notin @($DCVMName, $SQL1VMName, $SQL2VMName) }
+#endregion
+
 #region Confirmation
 if (-not $Force) {
     Write-Host ""
@@ -75,7 +92,10 @@ if (-not $Force) {
     Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Red
     Write-Host ""
     Write-Host "This will permanently destroy:" -ForegroundColor Yellow
-    Write-Host "  • VMs: SQLLab-DC, SQLLab-SQL1, SQLLab-SQL2" -ForegroundColor Yellow
+    Write-Host "  • VMs: $($LabVMNames -join ', ')" -ForegroundColor Yellow
+    if ($addedVMs) {
+        Write-Host "    (includes add-cluster nodes: $($addedVMs -join ', '))" -ForegroundColor Yellow
+    }
     Write-Host "  • All VM VHDX files under: $VMPath" -ForegroundColor Yellow
     Write-Host "  • Hyper-V switch: $SwitchName" -ForegroundColor Yellow
     Write-Host "  • NAT: $NatName" -ForegroundColor Yellow
@@ -102,7 +122,7 @@ Write-Log "=== TEARDOWN STARTED ===" INFO
 
 #region 1. Stop and remove VMs
 Write-Log "Stopping VMs..." INFO
-foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
+foreach ($vmName in $LabVMNames) {
     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
     if ($vm) {
         try {
@@ -120,7 +140,7 @@ foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
 }
 
 Write-Log "Removing VMs..." INFO
-foreach ($vmName in @($DCVMName, $SQL1VMName, $SQL2VMName)) {
+foreach ($vmName in $LabVMNames) {
     $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
     if ($vm) {
         try {
@@ -204,15 +224,16 @@ try {
 #region 7. Remove hosts file entries
 Write-Log "Removing lab entries from hosts file..." INFO
 $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-$labMarkerStart = "# SQLLabBuilder-BEGIN"
-$labMarkerEnd   = "# SQLLabBuilder-END"
+# Matches the primary block (# SQLLabBuilder-BEGIN/END) and every add-cluster
+# block (# SQLLabBuilder-c2-BEGIN/END, -c3-, ...). Non-greedy so each BEGIN pairs
+# with its own END.
 try {
     $content = Get-Content -Path $hostsPath -Raw -ErrorAction Stop
-    if ($content -match [regex]::Escape($labMarkerStart)) {
-        $pattern = "(?s)$([regex]::Escape($labMarkerStart)).*?$([regex]::Escape($labMarkerEnd))\r?\n?"
-        $newContent = $content -replace $pattern, ""
+    if ($content -match "# SQLLabBuilder(?:-c\d+)?-BEGIN") {
+        $pattern = "(?s)# SQLLabBuilder(?:-c\d+)?-BEGIN.*?# SQLLabBuilder(?:-c\d+)?-END\r?\n?"
+        $newContent = [regex]::Replace($content, $pattern, "")
         Set-Content -Path $hostsPath -Value $newContent -Encoding ASCII -ErrorAction Stop
-        Write-Log "Removed lab entries from hosts file" SUCCESS
+        Write-Log "Removed all lab entries (primary + added clusters) from hosts file" SUCCESS
     } else {
         Write-Log "No lab hosts entries found — skipping" WARN
     }
@@ -238,7 +259,8 @@ Write-Log "Removing lab firewall rules..." INFO
 Write-Log "Removing build checkpoints..." INFO
 if ($CheckpointPath -and (Test-Path $CheckpointPath)) {
     try {
-        $cpFiles = Get-ChildItem -Path $CheckpointPath -Filter "step-*.done" -ErrorAction Stop
+        $cpFiles = Get-ChildItem -Path $CheckpointPath -ErrorAction Stop |
+                   Where-Object { $_.Name -like "step-*.done" -or $_.Name -like "addcluster*.done" }
         if ($cpFiles.Count -gt 0) {
             $cpFiles | Remove-Item -Force -ErrorAction Stop
             Write-Log "Removed $($cpFiles.Count) checkpoint file(s) from: $CheckpointPath" SUCCESS

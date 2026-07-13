@@ -1,17 +1,21 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 08 — Join SQLLAB-SQL1 and SQLLAB-SQL2 to sqllab.local.
 
+    The join-and-confirm logic lives in Join-LabNodesToDomain in
+    steps\_shared\LabFunctions.ps1 and is shared with AddCluster.ps1.
+
 IDEMPOTENCY CHECKS:
-    - Checks the domain membership of each SQL VM before attempting a join.
-    - Skips domain join if VM already reports correct domain.
-    - Polls until each VM is back online and confirming domain membership.
+    - Skips domain join if a VM already reports the correct domain.
     - Checkpoint step-08.done skips if both VMs are domain-joined.
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# Shared domain-join implementation (used by both the primary build and AddCluster.ps1).
+. (Join-Path $PSScriptRoot "_shared\LabFunctions.ps1")
 
 $localAdminCred  = New-Object System.Management.Automation.PSCredential("Administrator",
                        (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
@@ -48,80 +52,10 @@ if (Test-Path $cpFile) {
 }
 #endregion
 
-#region Helper: wait for PS Direct
-function Wait-VMReachable {
-    param([string]$VMName, [System.Management.Automation.PSCredential]$Cred, [int]$Mins = 15)
-    $deadline = (Get-Date).AddMinutes($Mins)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            Invoke-Command -VMName $VMName -Credential $Cred -ScriptBlock { $true } -ErrorAction Stop | Out-Null
-            return
-        } catch { Start-Sleep -Seconds 10 }
-    }
-    throw "[$VMName] PowerShell Direct unreachable after $Mins minutes."
-}
-#endregion
-
-foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
-    Write-Log "[$vmName] Checking current domain membership..." INFO
-    Wait-VMReachable -VMName $vmName -Cred $localAdminCred -Mins 10
-
-    $currentDomain = Invoke-Command -VMName $vmName -Credential $localAdminCred -ScriptBlock {
-        (Get-WmiObject Win32_ComputerSystem).Domain
-    } -ErrorAction Stop
-
-    if ($currentDomain -eq $DomainName) {
-        Write-Log "[$vmName] Already joined to '$DomainName' — skipping." INFO
-        continue
-    }
-
-    Write-Log "[$vmName] Current domain: '$currentDomain'. Joining '$DomainName'..." INFO
-
-    try {
-        Invoke-Command -VMName $vmName -Credential $localAdminCred -ScriptBlock {
-            param($Domain, $User, $Pass)
-            $cred = New-Object System.Management.Automation.PSCredential($User,
-                        (ConvertTo-SecureString $Pass -AsPlainText -Force))
-            Add-Computer -DomainName $Domain -Credential $cred -Restart -Force -ErrorAction Stop
-        } -ArgumentList $DomainName, "$NetBIOSName\Administrator", $AdminPassword -ErrorAction Stop
-
-        Write-Log "[$vmName] Domain join command sent. VM rebooting..." INFO
-    } catch {
-        Write-Log "[$vmName] Domain join failed: $_" ERROR
-        throw
-    }
-}
-
-#region Wait for SQL VMs to come back as domain members
-Write-Log "Waiting for SQL VMs to reboot and confirm domain membership..." INFO
-Start-Sleep -Seconds 30
-
-foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
-    $deadline  = (Get-Date).AddMinutes(15)
-    $confirmed = $false
-
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $dom = Invoke-Command -VMName $vmName -Credential $domainAdminCred -ScriptBlock {
-                (Get-WmiObject Win32_ComputerSystem).Domain
-            } -ErrorAction Stop
-
-            if ($dom -eq $DomainName) {
-                Write-Log "[$vmName] Domain membership confirmed: $dom" SUCCESS
-                $confirmed = $true
-                break
-            }
-        } catch {
-            Write-Log "[$vmName] Not ready yet — retrying in 15 s..." INFO
-        }
-        Start-Sleep -Seconds 15
-    }
-
-    if (-not $confirmed) {
-        throw "[$vmName] Could not confirm domain membership after 15 minutes."
-    }
-}
-#endregion
+Join-LabNodesToDomain -NodeSpecs @(
+    @{ VMName = $SQL1VMName }
+    @{ VMName = $SQL2VMName }
+) -LocalAdminCred $localAdminCred -DomainAdminCred $domainAdminCred
 
 #region Checkpoint
 New-Item -ItemType File -Path $cpFile -Force | Out-Null

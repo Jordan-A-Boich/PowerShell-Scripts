@@ -12,6 +12,9 @@ IDEMPOTENCY CHECKS:
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Shared Grant-LogonAsService implementation (used by both the primary build and AddCluster.ps1).
+. (Join-Path $PSScriptRoot "_shared\LabFunctions.ps1")
+
 $domainAdminCred = New-Object System.Management.Automation.PSCredential("$NetBIOSName\Administrator",
                        (ConvertTo-SecureString $AdminPassword -AsPlainText -Force))
 
@@ -67,50 +70,10 @@ Invoke-Command -VMName $DCVMName -Credential $domainAdminCred -ScriptBlock {
     ForEach-Object { Write-Log "[$DCVMName] $_" INFO }
 #endregion
 
-#region Grant 'Log on as a service' on both SQL VMs via secedit
-function Grant-LogonAsService {
-    param(
-        [string]$VMName,
-        [string]$AccountSid,
-        [System.Management.Automation.PSCredential]$Credential
-    )
-
-    Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
-        param($SvcAccount)
-
-        $infPath = "$env:TEMP\sqlsvc-loas.inf"
-        $dbPath  = "$env:TEMP\sqlsvc-loas.sdb"
-        $logPath = "$env:TEMP\sqlsvc-loas.log"
-
-        # Export current security policy
-        secedit /export /cfg $infPath /quiet
-
-        $current = Get-Content $infPath -Raw
-        if ($current -match "SeServiceLogonRight\s*=\s*(.+)") {
-            $currentRights = $Matches[1].Trim()
-            if ($currentRights -notlike "*$SvcAccount*") {
-                $newRights = "$currentRights,$SvcAccount"
-                $current   = $current -replace "SeServiceLogonRight\s*=\s*.+", "SeServiceLogonRight = $newRights"
-            } else {
-                Write-Output "SeServiceLogonRight already granted to $SvcAccount"
-                return
-            }
-        } else {
-            $current += "`r`n[Privilege Rights]`r`nSeServiceLogonRight = $SvcAccount"
-        }
-
-        $current | Set-Content -Path $infPath -Encoding Unicode
-        secedit /configure /db $dbPath /cfg $infPath /log $logPath /quiet
-        Remove-Item $infPath, $dbPath, $logPath -Force -ErrorAction SilentlyContinue
-        Write-Output "Granted SeServiceLogonRight to $SvcAccount"
-
-    } -ArgumentList "$NetBIOSName\$SQLSvcAccountName" -ErrorAction Stop |
-        ForEach-Object { Write-Log "[$VMName] $_" INFO }
-}
-
+#region Grant 'Log on as a service' on both SQL VMs via secedit (shared function)
 foreach ($vmName in @($SQL1VMName, $SQL2VMName)) {
     Write-Log "[$vmName] Granting 'Log on as a service' to '$SQLSvcAccount'..." INFO
-    Grant-LogonAsService -VMName $vmName -AccountSid $SQLSvcAccount -Credential $domainAdminCred
+    Grant-LogonAsService -VMName $vmName -Credential $domainAdminCred
 }
 #endregion
 

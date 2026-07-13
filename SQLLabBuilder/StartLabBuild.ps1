@@ -19,12 +19,21 @@
 .PARAMETER Force
     Used with -Teardown to skip the confirmation prompt.
 
+.PARAMETER AddCluster
+    Delegates to AddCluster.ps1 to add ANOTHER independent 2-node Always On AG
+    (on its own Windows Failover Cluster) to an already-built lab, reusing the
+    existing domain controller, virtual switch and sqlsvc account. Repeatable —
+    each run adds the next cluster. Combine with -ContainedAG for a Contained AG,
+    or -SQLVersion to pin the new nodes' SQL version (defaults to the lab's ISO).
+
 .EXAMPLE
     .\StartLabBuild.ps1
     .\StartLabBuild.ps1 -SQLVersion 2019
     .\StartLabBuild.ps1 -SQLVersion 2025
     .\StartLabBuild.ps1 -SQLVersion 2022 -ContainedAG
     .\StartLabBuild.ps1 -SQLVersion 2025 -ContainedAG
+    .\StartLabBuild.ps1 -AddCluster
+    .\StartLabBuild.ps1 -AddCluster -ContainedAG
     .\StartLabBuild.ps1 -Teardown
     .\StartLabBuild.ps1 -Teardown -Force
 #>
@@ -35,6 +44,8 @@ param(
     [string]$SQLVersion = "2022",
 
     [switch]$ContainedAG,
+
+    [switch]$AddCluster,
 
     [switch]$Teardown,
 
@@ -70,6 +81,24 @@ if ($Teardown) {
     # it when unset throws. Default to 0 if the teardown ran no native commands.
     $teardownExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
     exit $teardownExit
+}
+#endregion
+
+#region Add-cluster shortcut
+if ($AddCluster) {
+    $addScript = Join-Path $ScriptRoot "AddCluster.ps1"
+    if (-not (Test-Path $addScript)) {
+        Write-Error "AddCluster.ps1 not found at: $addScript"
+        exit 1
+    }
+    $addArgs = @{}
+    # Only forward -SQLVersion when the user explicitly set it, so AddCluster can
+    # auto-detect the lab's already-downloaded SQL ISO by default.
+    if ($PSBoundParameters.ContainsKey('SQLVersion')) { $addArgs['SQLVersion'] = $SQLVersion }
+    if ($ContainedAG) { $addArgs['ContainedAG'] = $true }
+    & $addScript @addArgs
+    $addExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    exit $addExit
 }
 #endregion
 

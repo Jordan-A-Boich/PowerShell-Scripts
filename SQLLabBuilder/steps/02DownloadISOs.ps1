@@ -186,10 +186,16 @@ if ((Test-Path $sqlDestPath) -and (Get-Item $sqlDestPath).Length -gt 0) {
     if ($setupExeDownloaded) {
         # Attempt 1: silent unattended download — bootstrapper supports /ACTION=Download /QUIET
         Write-Log "Attempting silent ISO download (no GUI)..." INFO
-        # /EDITION=Developer pins the download to Developer edition. Some SQL 2025 bootstrappers
-        # offer both Standard and Developer and otherwise default to Standard — and Standard does
-        # not support readable secondaries / contained AGs, which step 13 requires.
-        $silentArgs = "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /EDITION=Developer /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
+        # The 2019/2022 bootstrappers (SQL{ver}-SSEI-Dev.exe) are Developer-only and REJECT both
+        # /EDITION and /IACCEPTSQLSERVERLICENSETERMS during /ACTION=Download ("setting not
+        # recognized/allowed", exit -1). The generic 2025 bootstrapper offers multiple editions,
+        # so it needs /EDITION=Developer — otherwise it defaults to Standard, which lacks the
+        # readable secondaries / contained AG support that step 13 requires.
+        $silentArgs = if ($global:SQLVersion -eq '2025') {
+            "/ACTION=Download /QUIET /IACCEPTSQLSERVERLICENSETERMS /EDITION=Developer /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
+        } else {
+            "/ACTION=Download /QUIET /MEDIATYPE=ISO /MEDIAPATH=`"$ISOPath`""
+        }
         try {
             $proc = Start-Process -FilePath $setupExePath -ArgumentList $silentArgs -Wait -PassThru -ErrorAction Stop
             Write-Log "Bootstrapper exited (code $($proc.ExitCode)) - checking for ISO..." INFO
