@@ -14,13 +14,16 @@ Set-StrictMode -Version Latest
 $script:DagLogFile = $null
 
 function Initialize-DagLog {
-    param([Parameter(Mandatory)][string]$LogDirectory)
+    param(
+        [Parameter(Mandatory)][string]$LogDirectory,
+        [string]$NamePrefix = 'Initialize-DAG'
+    )
 
     if (-not (Test-Path $LogDirectory)) {
         New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
     }
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $script:DagLogFile = Join-Path $LogDirectory "Initialize-DAG_$stamp.log"
+    $script:DagLogFile = Join-Path $LogDirectory "${NamePrefix}_$stamp.log"
     Write-DagLog "Log file: $script:DagLogFile" INFO
     return $script:DagLogFile
 }

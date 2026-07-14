@@ -171,15 +171,52 @@ never the source of truth**: delete it and the next run re-reads everything from
 
 ## Failing over, when you are ready
 
-1. Stop application traffic against the global primary.
-2. Set **both** member AGs to `SYNCHRONOUS_COMMIT` (run on the global primary *and* the forwarder
-   primary) and wait for the forwarder to report `SYNCHRONIZED`.
-3. On the global primary: `ALTER AVAILABILITY GROUP [<dag>] SET (ROLE = SECONDARY);`
-4. On the forwarder primary: `ALTER AVAILABILITY GROUP [<dag>] FORCE_FAILOVER_ALLOW_DATA_LOSS;`
+Use `Failover-DAG.ps1`. It is prompt-driven like `Initialize-DAG.ps1`, and it does the whole
+sequence: synchronous commit, a synchronization and LSN rollup, a GO / NO-GO recommendation, the
+failover itself, then back to asynchronous commit and a health rollup.
 
-`FORCE_FAILOVER_ALLOW_DATA_LOSS` is the only supported failover for a distributed AG. With both
-sides synchronized and traffic stopped, there is nothing to lose. Step 7 of the script prints these
-commands filled in with your names.
+```powershell
+.\Failover-DAG.ps1                # interview, readiness rollup, then ask before failing over
+.\Failover-DAG.ps1 -ReadinessOnly # dry run: rollup only, changes nothing
+```
+
+Stop application traffic against the global primary first. Everything else it handles.
+
+**Which side is primary is always read from the servers**, never from the saved plan — a failover
+is precisely the thing that changes it, so a tool that trusted the file would fail the DAG over in
+the direction it has already gone.
+
+### Why the forced failover is not lossy
+
+`FORCE_FAILOVER_ALLOW_DATA_LOSS` is the only failover a distributed AG accepts — there is no
+planned-failover form of the statement. Whether it loses data is a property of the **state you run
+it in**, not of the statement:
+
+* against a `SYNCHRONIZED` DAG whose global primary has already been demoted and is accepting no
+  writes, there is nothing left to lose;
+* against an asynchronous or lagging DAG, it does exactly what it says, silently.
+
+The script exists to guarantee the first case, and to stop if it cannot. If you do it by hand:
+
+1. Set **both** member AGs to `SYNCHRONOUS_COMMIT` (run on the global primary *and* the forwarder
+   primary) and wait for the forwarder to report `SYNCHRONIZED`.
+2. On the global primary: `ALTER AVAILABILITY GROUP [<dag>] SET (ROLE = SECONDARY);`
+3. On the forwarder primary: `ALTER AVAILABILITY GROUP [<dag>] FORCE_FAILOVER_ALLOW_DATA_LOSS;`
+
+Both statements name the **distributed** group, not the member AG. Which side each one acts on is
+decided by which replica you run it against — naming the member AG in step 2 fails with `Msg 19512`.
+
+### Two things to know
+
+**A cross-version failover is one way.** Bringing the databases online on the higher version
+upgrades their files, and from that moment the older side can no longer apply their log. The old
+primary becomes a dead end you decommission, not a standby you can return to. The script warns you
+before it happens, and refuses outright to fail over to an *older* version.
+
+**Between the demotion and the failover, the DAG has no primary** and the databases are offline on
+both sides. The window is short, but if a run dies inside it, re-run the script: it recognises the
+state and asks which member should take the primary role — finishing the failover, or putting it
+back where it was. Both are safe there, because nothing has been upgraded yet.
 
 ---
 
@@ -193,7 +230,8 @@ commands filled in with your names.
 | Seeding never starts on the forwarder | `ALTER AVAILABILITY GROUP [<forwarder>] GRANT CREATE ANY DATABASE` — preflight does this for you. |
 | `sys.dm_hadr_automatic_seeding` shows `FAILED` | Transient failures are normal and are retried. The script only fails a database that has no successful attempt at all. |
 
-Logs are written to `DAG\logs\Initialize-DAG_<timestamp>.log`.
+Logs are written to `DAG\logs\Initialize-DAG_<timestamp>.log` and
+`DAG\logs\Failover-DAG_<timestamp>.log`.
 
 ---
 
@@ -202,6 +240,7 @@ Logs are written to `DAG\logs\Initialize-DAG_<timestamp>.log`.
 ```
 DAG\
   Initialize-DAG.ps1          entry point: interview, plan, orchestrate
+  Failover-DAG.ps1            entry point: readiness rollup, go / no-go, fail over
   steps\
     00Preflight.ps1           validate + repair prerequisites
     01BuildPlan.ps1           all user interaction lives here
@@ -211,6 +250,13 @@ DAG\
     05SeedManual.ps1          backup / restore / log replay / join
     06Finalize.ps1            converge on asynchronous commit
     07HealthRollup.ps1        health summary and next steps
+    failover\
+      01Context.ps1           which DAG, and which way round (read from the servers)
+      02Preflight.ps1         the failovers that must not be attempted at all
+      03Synchronize.ps1       synchronous commit, and wait for it to take effect
+      04Readiness.ps1         synchronization + LSN rollup; the GO / NO-GO call
+      05Failover.ps1          demote, force the failover, confirm the role moved
+      06Settle.ps1            back to asynchronous commit; post-failover health
     _shared\
       DagCommon.ps1           logging, T-SQL quoting, retry, waits
       DagSql.ps1              connections; long ops with percent-complete
@@ -220,5 +266,6 @@ DAG\
       DagBackupRestore.ps1    striped backups, MOVE, LSN-aware log chain
       DagAgentJob.ps1         the log backup job
       DagHealth.ps1           health rollup and seeding progress
+      DagFailover.ps1         live role discovery, sync state, the failover statements
       DagState.ps1            durable plan + per-database progress
 ```
