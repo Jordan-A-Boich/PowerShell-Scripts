@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — Step 04: create the distributed availability group and join the forwarder.

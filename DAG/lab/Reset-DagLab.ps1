@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Lab utility — rebuilds the SQL Server lab into a known starting state for testing
@@ -45,6 +45,14 @@
 .EXAMPLE
     .\Reset-DagLab.ps1 -State FailoverReady
     Rebuilds the lab ready for a run of Failover-DAG.ps1.
+
+.EXAMPLE
+    .\Reset-DagLab.ps1 -SourceDataPath D:\SQLDataAlt -SourceLogPath D:\SQLLogAlt
+    Rebuilds the lab with the databases on directories the FORWARDER replicas do not have.
+    This is what makes Initialize-DAG.ps1's file layout options distinguishable: "reuse the
+    source structure" then has to create those directories on the forwarder, while "use the
+    target's defaults" relocates the files. With everything on identical drive layouts, the
+    two are indistinguishable and the test proves nothing.
 #>
 
 [CmdletBinding()]
@@ -70,6 +78,13 @@ param(
 
     [ValidateRange(8, 8192)]
     [int]$DataFileMB = 64,
+
+    # Where the rebuilt databases put their files on the global primary AG. Defaults to the
+    # instance's own data/log directories. Point them somewhere the FORWARDER replicas do not
+    # have — D:\SQLDataAlt — to exercise Initialize-DAG's file layout choices: only then do
+    # "reuse the source structure" and "use the target's defaults" produce different results.
+    [string]$SourceDataPath,
+    [string]$SourceLogPath,
 
     [switch]$Force
 )
@@ -277,12 +292,25 @@ EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE',
 SELECT @p AS v;
 '@
 
+# Automatic seeding to the local secondary reproduces the primary's paths, so whatever
+# directories the databases are built in must exist on every replica of the global primary AG.
+$dataDir = if ($SourceDataPath) { $SourceDataPath.TrimEnd('\') } else { $gpInfo.DefaultDataPath.TrimEnd('\') }
+$logDir  = if ($SourceLogPath)  { $SourceLogPath.TrimEnd('\')  } else { $gpInfo.DefaultLogPath.TrimEnd('\')  }
+foreach ($r in $GlobalReplicas) {
+    New-DagRemoteDirectory -Instance $r -Path $dataDir
+    New-DagRemoteDirectory -Instance $r -Path $logDir
+}
+Write-DagLog "  Database files will be created in $dataDir and $logDir on $($GlobalReplicas -join ', ')." INFO
+
 foreach ($db in $Databases) {
     $q = ConvertTo-DagQuotedName $db
+    $mdf = ConvertTo-DagQuotedString (Join-DagPath -Path $dataDir -ChildPath @("$db.mdf"))
+    $ldf = ConvertTo-DagQuotedString (Join-DagPath -Path $logDir  -ChildPath @("${db}_log.ldf"))
     Invoke-LabSql -Instance $gp -Timeout 900 -Query @"
-CREATE DATABASE $q;
+CREATE DATABASE $q
+ON PRIMARY (NAME = N'$db',      FILENAME = $mdf, SIZE = ${DataFileMB}MB)
+LOG ON     (NAME = N'${db}_log', FILENAME = $ldf, SIZE = 16MB);
 ALTER DATABASE $q SET RECOVERY FULL;
-ALTER DATABASE $q MODIFY FILE (NAME = N'$db', SIZE = ${DataFileMB}MB);
 "@
     # Something to see, and enough of it that a manual seed has real work to do.
     Invoke-LabSql -Instance $gp -Timeout 900 -Query @"

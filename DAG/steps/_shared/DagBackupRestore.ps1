@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — backup and restore engine for manual seeding.
@@ -167,52 +167,8 @@ WHERE d.name = $(ConvertTo-DagQuotedString $DatabaseName)
     }
 }
 
-function Get-DagRestoreMoveClause {
-    <#
-    .SYNOPSIS
-        Builds MOVE clauses relocating a backup's files onto the target's layout.
-    .DESCRIPTION
-        A file keeps its original path when that directory already exists on the target
-        (the common same-layout case). Otherwise it moves to the target instance's
-        default data/log directory. This is what lets the same backup restore onto
-        replicas whose drive letters differ.
-    #>
-    param(
-        [Parameter(Mandatory)][string]$Instance,
-        [Parameter(Mandatory)][string[]]$Files,
-        [Parameter(Mandatory)][string]$DatabaseName,
-        [Parameter(Mandatory)][string]$DefaultDataPath,
-        [Parameter(Mandatory)][string]$DefaultLogPath
-    )
-
-    $fileList = Get-DagBackupFileList -Instance $Instance -Files $Files
-    $moves    = New-Object System.Collections.Generic.List[string]
-    $dirCache = @{}
-
-    foreach ($f in $fileList) {
-        $srcDir  = [System.IO.Path]::GetDirectoryName($f.PhysicalName)
-        $srcLeaf = [System.IO.Path]::GetFileName($f.PhysicalName)
-
-        if (-not $dirCache.ContainsKey($srcDir)) {
-            $probe = Test-DagRemotePath -Instance $Instance -Path $srcDir
-            $dirCache[$srcDir] = $probe.IsDirectory
-        }
-
-        if ($dirCache[$srcDir]) {
-            $target = $f.PhysicalName
-        } else {
-            $baseDir = if ($f.Type -eq 'L') { $DefaultLogPath } else { $DefaultDataPath }
-            # FILESTREAM / memory-optimized containers are directories, not files.
-            $target  = if ($f.Type -eq 'S') { Join-DagPath -Path $baseDir.TrimEnd('\') -ChildPath @("$(Get-DagSafeFileToken $DatabaseName)_$($f.LogicalName)") }
-                       else                 { Join-DagPath -Path $baseDir.TrimEnd('\') -ChildPath @($srcLeaf) }
-            Write-DagLog "  [$Instance] MOVE '$($f.LogicalName)' -> $target (source directory '$srcDir' not present)" DEBUG
-        }
-
-        $moves.Add("MOVE $(ConvertTo-DagQuotedString $f.LogicalName) TO $(ConvertTo-DagQuotedString $target)")
-    }
-
-    return @($moves.ToArray())
-}
+# Where the restored files land is a decision the operator makes in the interview, not one
+# this engine improvises. Get-DagRestoreMoveClause lives in DagFileLayout.ps1.
 
 #endregion
 
@@ -409,7 +365,8 @@ function Restore-DagFullBackup {
         restore, and it is the single flag that converts a stall into an infinite loop.
 
     .PARAMETER Plan
-        Supplying it enables the restore receipt and the loop breaker in rule 3.
+        Carries the operator's chosen file layout, and enables the restore receipt and the
+        loop breaker in rule 3.
 
     .PARAMETER ProbeLogFiles
         Log backups from this chain, oldest first, used to prove the state of the FULL.
@@ -517,7 +474,7 @@ Re-run with -Force to restore it again anyway.
     #endregion
 
     $moves = @(Get-DagRestoreMoveClause -Instance $Instance -Files $Files -DatabaseName $DatabaseName `
-                -DefaultDataPath $InstanceInfo.DefaultDataPath -DefaultLogPath $InstanceInfo.DefaultLogPath)
+                -InstanceInfo $InstanceInfo -Plan $Plan)
 
     # Written before the restore starts, so an interruption is distinguishable afterwards
     # from a completion. Nothing else can tell those two apart.

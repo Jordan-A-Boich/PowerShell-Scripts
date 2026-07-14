@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — Step 03: align seeding modes and make sure every selected database

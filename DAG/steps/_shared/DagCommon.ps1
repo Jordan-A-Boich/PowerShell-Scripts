@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — common primitives: logging, identifier quoting, retry, misc helpers.

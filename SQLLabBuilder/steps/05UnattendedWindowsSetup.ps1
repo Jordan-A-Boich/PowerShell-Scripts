@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 05 — Install Windows Server on each VM VHDX using offline DISM image application.

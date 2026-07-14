@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Failover — Step 3: put the distributed AG into synchronous commit and wait for it

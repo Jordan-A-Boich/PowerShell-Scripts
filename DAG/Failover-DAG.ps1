@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Failover-DAG — planned, lossless failover of a SQL Server distributed availability group.

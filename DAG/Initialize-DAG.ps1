@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Initialize-DAG — end-to-end setup and database initialization for a SQL Server
@@ -17,6 +17,9 @@
       * Creates the distributed AG and joins the forwarder.
       * Seeds the databases either automatically (SQL Server streams them) or manually
         (striped compressed backup to a share, restore, log-chain catch-up, join).
+      * For manual seeding, puts the restored data and log files where you tell it to:
+        reuse the structure the databases have today, take each target's own default
+        directories, or name the directories — or every individual file — yourself.
       * Settles the DAG into asynchronous commit and prints a health rollup.
 
     Assumptions:
@@ -100,6 +103,7 @@ foreach ($file in @(
         'DagPrompt.ps1'
         'DagDiscovery.ps1'
         'DagFileOps.ps1'
+        'DagFileLayout.ps1'
         'DagBackupRestore.ps1'
         'DagAgentJob.ps1'
         'DagHealth.ps1'
@@ -144,6 +148,19 @@ function ConvertTo-DagArray {
 
 function Restore-DagPlanShape {
     param([Parameter(Mandatory)][psobject]$Plan)
+
+    # FileLayoutMode was added after the first plans were written. It is left EMPTY here
+    # rather than defaulted: a plan that never recorded where its files should go has not
+    # answered the question, and the operator is asked before the run resumes.
+    foreach ($p in 'FileLayoutMode','FileLayout') {
+        if ($Plan.PSObject.Properties.Name -notcontains $p) {
+            $Plan | Add-Member -NotePropertyName $p -NotePropertyValue $null
+        }
+    }
+    $Plan.FileLayout = ConvertTo-DagArray $Plan.FileLayout
+    foreach ($entry in $Plan.FileLayout) {
+        $entry.Files = ConvertTo-DagArray $entry.Files
+    }
 
     foreach ($p in 'GlobalReplicas','GlobalSecondaries','ForwarderReplicas','ForwarderSecondaries','Databases','Progress') {
         $Plan.$p = ConvertTo-DagArray $Plan.$p
@@ -241,6 +258,19 @@ try {
 
     if (-not $plan) {
         $plan = New-DagPlan
+        Save-DagPlan -Plan $plan
+    }
+
+    # A plan written before file layouts were a choice never recorded one. Ask now rather
+    # than resume on a guess: the old behaviour quietly relocated files to the target's
+    # default directories whenever the source path did not exist there, and a file landing
+    # somewhere the operator did not expect is exactly what this question prevents.
+    if ($plan.SeedingMode -eq 'MANUAL' -and -not $plan.FileLayoutMode) {
+        Write-DagLog 'This plan predates the file layout question. Answering it now.' INFO
+        $layout = New-DagFileLayoutPlan -SourceInstance $plan.GlobalPrimaryReplica `
+                    -Databases @($plan.Databases) -RestoreTargets @(Get-DagRestoreTarget -Plan $plan)
+        $plan.FileLayoutMode = $layout.Mode
+        $plan.FileLayout     = @($layout.Entries)
         Save-DagPlan -Plan $plan
     }
     #endregion

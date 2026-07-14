@@ -19,6 +19,12 @@ interrupted run resumes where it stopped rather than starting over.
   (`Install-Module SqlServer -Scope CurrentUser`)
 * `sysadmin` on every replica of both availability groups
 
+> **Editing these files:** save them as **UTF-8 with a BOM** (`.editorconfig` enforces it).
+> They contain em dashes and curly quotes, and Windows PowerShell 5.1 assumes ANSI for a
+> BOM-less file — which mangles those characters and, where one sits inside a string, stops
+> the script parsing at all. PowerShell 7 assumes UTF-8 and never notices, so a file saved
+> without the BOM breaks 5.1 *silently* until someone runs it there.
+
 ## Assumptions
 
 1. Both availability groups already exist, **each with a listener**.
@@ -53,8 +59,30 @@ You will be asked, once, up front:
 | Seeding mode | `AUTOMATIC` or `MANUAL` |
 | Backup share, stripe count, log interval | Manual seeding only |
 | Databases to exclude | Numbered list; press ENTER to include everything |
+| Where the data and log files land | Manual seeding only; see below |
 
 Everything after the plan confirmation is unattended.
+
+### Where the restored files land
+
+Manual seeding restores a backup taken on the global primary onto replicas that may not have
+the same drives. Automatic seeding places the files itself, so the question is asked only for
+manual seeding — once, in the interview:
+
+| Option | What it does |
+|---|---|
+| **Reuse the current file structure** | Each file keeps the path it has on the global primary. Directories that do not exist on a target are **created** there. |
+| **Target defaults** | Every data file goes to the target's `InstanceDefaultDataPath`, every log file to its `InstanceDefaultLogPath`. |
+| **Choose** | You name the directories: one pair for all replicas, a pair per replica, or the destination of every individual file. |
+
+Preflight proves the choice before any data moves: every directory the restores will need is
+probed on every target and created if missing. A path no target can satisfy — `E:\SQLData` on a
+server with no `E:` drive — fails there, in seconds, naming the alternatives, rather than hours
+into a restore.
+
+Individual file destinations are matched by **logical name**. A file added to the database
+after the plan was built has no destination of its own and falls back to the chosen data or log
+directory for that replica, so the restore never fails for lack of an answer.
 
 ### Other switches
 
@@ -117,7 +145,7 @@ Per database, in order:
    quietly unless its local replica holds the PRIMARY role.
 2. Take a non-copy-only, compressed, checksummed **FULL backup striped across N files**.
 3. Restore it `WITH NORECOVERY` onto the forwarder primary and every forwarder secondary,
-   relocating data and log files onto each target's own drive layout.
+   putting the data and log files where you said they should go.
 4. Restore every log backup taken since, `WITH NORECOVERY`.
 5. **Disable the log backup job and wait for any in-flight backup to finish.** Disabling a job does
    not stop the run already in progress; a log backup that fired during the final catch-up would
@@ -263,7 +291,8 @@ DAG\
       DagPrompt.ps1           numbered menus
       DagDiscovery.ps1        topology, versions, database eligibility
       DagFileOps.ps1          server-side file operations on the share
-      DagBackupRestore.ps1    striped backups, MOVE, LSN-aware log chain
+      DagFileLayout.ps1       where restored data and log files land; the MOVE clauses
+      DagBackupRestore.ps1    striped backups, LSN-aware log chain
       DagAgentJob.ps1         the log backup job
       DagHealth.ps1           health rollup and seeding progress
       DagFailover.ps1         live role discovery, sync state, the failover statements

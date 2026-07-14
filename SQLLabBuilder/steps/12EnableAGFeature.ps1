@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 12 - Enable Always On Availability Groups feature on both SQL nodes.

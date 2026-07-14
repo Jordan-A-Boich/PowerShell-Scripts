@@ -1,0 +1,11 @@
+root = true
+
+# These scripts use typographic characters (em dashes, curly quotes) in comments and in
+# the messages they print. Windows PowerShell 5.1 assumes ANSI for a file with no byte
+# order mark, so a BOM-less UTF-8 script decodes into mojibake there — and when that lands
+# inside a string or a here-string terminator, the file stops parsing altogether. Saving
+# .ps1 files as UTF-8 WITH a BOM is what keeps them running on both 5.1 and 7.
+[*.ps1]
+charset = utf-8-bom
+insert_final_newline = true
+trim_trailing_whitespace = true

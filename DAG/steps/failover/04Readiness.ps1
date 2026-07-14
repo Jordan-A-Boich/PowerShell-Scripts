@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Failover — Step 4: the synchronization and LSN rollup, and the go / no-go call.

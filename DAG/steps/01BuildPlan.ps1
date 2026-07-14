@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — Step 01: gather every decision up front and produce the plan.
@@ -256,6 +256,33 @@ global primary.
     }
     #endregion
 
+    #region File layout on the restore targets
+    <#
+        Only manual seeding restores anything, so only manual seeding has a say in where
+        the files land: automatic seeding is SQL Server streaming the database, and it
+        places the files itself.
+
+        The forwarder replicas are always restored onto. A global secondary joins them
+        only when a selected database has yet to be added to the global primary AG, since
+        manual seeding has to restore it there first.
+    #>
+    $fileLayoutMode = 'SOURCE'
+    $fileLayout     = @()
+    if ($seedingMode -eq 'MANUAL') {
+        $restoreTargets = @($fwTopo.Replicas | ForEach-Object { $_.ReplicaServerName })
+        if (@($selected | Where-Object { -not $_.InThisAg }).Count -gt 0) {
+            $restoreTargets += @($gpTopo.SecondaryReplicas)
+        }
+        $restoreTargets = @($restoreTargets | Select-Object -Unique)
+
+        $layout = New-DagFileLayoutPlan -SourceInstance $gpPrimary `
+                    -Databases @($selected | ForEach-Object { $_.DatabaseName }) `
+                    -RestoreTargets $restoreTargets
+        $fileLayoutMode = $layout.Mode
+        $fileLayout     = @($layout.Entries)
+    }
+    #endregion
+
     $plan = [pscustomobject]@{
         DagName                 = $dagName
         Domain                  = $domain
@@ -280,6 +307,8 @@ global primary.
         ShareRoot               = $shareRoot
         StripeCount             = $stripeCount
         TLogIntervalMinutes     = $tlogInterval
+        FileLayoutMode          = $fileLayoutMode
+        FileLayout              = @($fileLayout)
 
         Databases               = @($selected | ForEach-Object { $_.DatabaseName })
         Progress                = @()
@@ -315,6 +344,7 @@ function Show-DagPlanSummary {
         Write-Host "  Backup share        : $($Plan.ShareRoot)"
         Write-Host "  FULL backup stripes : $($Plan.StripeCount)"
         Write-Host "  Log backup interval : every $($Plan.TLogIntervalMinutes) minutes"
+        Show-DagFileLayoutSummary -Plan $Plan
     }
 
     Write-Host ''

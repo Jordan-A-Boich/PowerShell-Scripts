@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 09 — Create Windows Failover Cluster and configure File Share Witness.

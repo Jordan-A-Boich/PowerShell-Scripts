@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQLLabBuilder — Add another 2-node Always On AG to an existing lab.

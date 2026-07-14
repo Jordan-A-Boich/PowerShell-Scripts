@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     DAG Initializer — Step 00: validate (and where safe, repair) everything the plan needs.
@@ -250,6 +250,9 @@ write access (full control is simplest) to the backup share.
                 throw "SQL Server Agent is '$($instanceInfo[$r].AgentStatus)' on '$r'. Manual seeding schedules a log backup job on every replica of the global primary AG."
             }
         }
+
+        # Where the restored files land, proven now rather than hours into a restore.
+        Test-DagFileLayoutTarget -Plan $Plan -InstanceInfo $instanceInfo
 
         $competing = @(Get-DagCompetingLogBackup -Instance $Plan.GlobalPrimaryReplica -Databases $Plan.Databases -ShareRoot $Plan.ShareRoot)
         if ($competing.Count -gt 0) {

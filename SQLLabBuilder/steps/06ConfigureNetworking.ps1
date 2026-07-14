@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 06 — Configure static IP addresses inside each VM via PowerShell Direct.

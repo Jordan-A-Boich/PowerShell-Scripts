@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 08 — Join SQLLAB-SQL1 and SQLLAB-SQL2 to sqllab.local.

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Step 11 — Install SQL Server on SQLLAB-SQL1 and SQLLAB-SQL2.
