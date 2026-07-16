@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQLLabBuilder Centralized configuration.
@@ -173,6 +173,7 @@ function Get-LabClusterContext {
     }
 }
 #endregion
+
 
 
 

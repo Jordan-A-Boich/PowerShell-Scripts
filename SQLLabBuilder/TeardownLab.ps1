@@ -73,7 +73,10 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $LabVMNames = @($DCVMName, $SQL1VMName, $SQL2VMName)
 if (Get-Command Get-LabClusterContext -ErrorAction SilentlyContinue) {
     for ($i = 2; $i -le 50; $i++) {
-        $c = Get-LabClusterContext -Index $i
+        # Get-LabClusterContext throws once the derived IP block would exceed the
+        # lab /24 (index 23+). Those clusters can never exist, so stop discovering.
+        try   { $c = Get-LabClusterContext -Index $i }
+        catch { break }
         foreach ($vn in @($c.Node1VMName, $c.Node2VMName)) {
             if ((Get-VM -Name $vn -ErrorAction SilentlyContinue) -and ($LabVMNames -notcontains $vn)) {
                 $LabVMNames += $vn
