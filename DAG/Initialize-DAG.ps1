@@ -35,6 +35,14 @@
 .PARAMETER SeedTimeoutHours
     How long to wait for a single database to finish seeding. Default 24.
 
+.PARAMETER MaxConcurrentSeeds
+    AUTOMATIC seeding only. The most databases allowed to seed across the distributed AG
+    at once. Databases are admitted to the global primary AG through a sliding window of
+    this size: the instant one finishes seeding to the forwarder, the next is released.
+    Default 3. Streaming many databases across the cross-cluster endpoint at the same time
+    provokes transient "Transport Replica" seeding failures; capping the concurrency avoids
+    them. Has no effect on MANUAL seeding.
+
 .PARAMETER Credential
     Optional. A SQL Server login to use for every replica connection. When omitted you
     are asked how to authenticate. Supplying it lets the script run from automation.
@@ -69,6 +77,9 @@
 param(
     [ValidateRange(1, 720)]
     [int]$SeedTimeoutHours = 24,
+
+    [ValidateRange(1, 10)]
+    [int]$MaxConcurrentSeeds = 3,
 
     [pscredential]$Credential,
 
@@ -155,6 +166,16 @@ function Restore-DagPlanShape {
     foreach ($p in 'FileLayoutMode','FileLayout') {
         if ($Plan.PSObject.Properties.Name -notcontains $p) {
             $Plan | Add-Member -NotePropertyName $p -NotePropertyValue $null
+        }
+    }
+
+    # MaxConcurrentSeeds was added with the automatic-seeding throttle. A plan written
+    # before it never recorded a cap; default to 3 so a resumed run still throttles.
+    if ($Plan.PSObject.Properties.Name -notcontains 'MaxConcurrentSeeds' -or -not $Plan.MaxConcurrentSeeds) {
+        if ($Plan.PSObject.Properties.Name -contains 'MaxConcurrentSeeds') {
+            $Plan.MaxConcurrentSeeds = 3
+        } else {
+            $Plan | Add-Member -NotePropertyName MaxConcurrentSeeds -NotePropertyValue 3
         }
     }
     $Plan.FileLayout = ConvertTo-DagArray $Plan.FileLayout
@@ -257,7 +278,11 @@ try {
     }
 
     if (-not $plan) {
-        $plan = New-DagPlan
+        $plan = New-DagPlan -MaxConcurrentSeeds $MaxConcurrentSeeds
+        Save-DagPlan -Plan $plan
+    } elseif ($PSBoundParameters.ContainsKey('MaxConcurrentSeeds')) {
+        # An explicit -MaxConcurrentSeeds overrides whatever a resumed plan recorded.
+        $plan.MaxConcurrentSeeds = $MaxConcurrentSeeds
         Save-DagPlan -Plan $plan
     }
 

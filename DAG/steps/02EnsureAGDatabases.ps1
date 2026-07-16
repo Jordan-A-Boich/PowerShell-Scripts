@@ -207,23 +207,47 @@ function Invoke-DagEnsureAgDatabases {
     #endregion
 
     #region Ensure each database is in the global primary AG
-    foreach ($db in $Plan.Databases) {
-        if (Test-DagDatabaseInAg -Instance $Plan.GlobalPrimaryReplica -AgName $Plan.GlobalAgName -DatabaseName $db) {
-            Write-DagLog "  [$db] already in [$($Plan.GlobalAgName)]" SUCCESS
-            continue
-        }
+    <#
+        AUTOMATIC seeding defers this. Adding a database to the global primary AG is exactly
+        what makes it eligible to seed across the distributed AG, so adding every database
+        here — before the DAG even exists — is what makes them all stampede the forwarder at
+        once when it is created. Step 05 (automatic seeding) instead admits each database to
+        the global primary AG through a sliding window, so no more than the chosen number
+        seed across the endpoints at any moment. A database that is already a member is left
+        alone; step 05 accounts for it.
 
-        $fullFiles = @(Add-DagDatabaseToGlobalAg -Plan $Plan -DatabaseName $db -InstanceInfo $InstanceInfo -Force:$Force)
-
-        if ($fullFiles.Count -gt 0) {
-            # Let the forwarder restore reuse this backup rather than take a second full.
-            $rec = Get-DagProgress -Plan $Plan -DatabaseName $db
-            $rec.FullBackupFiles = @($fullFiles)
-            $rec.FullBackupUtc   = (Get-Date).ToUniversalTime().ToString('o')
-            Set-DagProgress -Plan $Plan -Record $rec
+        MANUAL seeding still adds up front: its forwarder copy comes from a backup/restore
+        that step 06 drives per database, not from a global-AG-membership stampede, so there
+        is nothing to throttle and the file-layout/backup bookkeeping wants the members in
+        place now.
+    #>
+    if ($Plan.SeedingMode -eq 'AUTOMATIC') {
+        $toAdd = @($Plan.Databases | Where-Object {
+            -not (Test-DagDatabaseInAg -Instance $Plan.GlobalPrimaryReplica -AgName $Plan.GlobalAgName -DatabaseName $_)
+        })
+        if ($toAdd.Count -gt 0) {
+            Write-DagLog "  Deferring $($toAdd.Count) database(s) to the throttled seeder (max $($Plan.MaxConcurrentSeeds) at a time): $($toAdd -join ', ')" INFO
+        } else {
+            Write-DagLog '  Every selected database is already a member of the global primary AG.' INFO
         }
+    } else {
+        foreach ($db in $Plan.Databases) {
+            if (Test-DagDatabaseInAg -Instance $Plan.GlobalPrimaryReplica -AgName $Plan.GlobalAgName -DatabaseName $db) {
+                Write-DagLog "  [$db] already in [$($Plan.GlobalAgName)]" SUCCESS
+                continue
+            }
+
+            $fullFiles = @(Add-DagDatabaseToGlobalAg -Plan $Plan -DatabaseName $db -InstanceInfo $InstanceInfo -Force:$Force)
+
+            if ($fullFiles.Count -gt 0) {
+                # Let the forwarder restore reuse this backup rather than take a second full.
+                $rec = Get-DagProgress -Plan $Plan -DatabaseName $db
+                $rec.FullBackupFiles = @($fullFiles)
+                $rec.FullBackupUtc   = (Get-Date).ToUniversalTime().ToString('o')
+                Set-DagProgress -Plan $Plan -Record $rec
+            }
+        }
+        Write-DagLog 'All selected databases are members of the global primary availability group.' SUCCESS
     }
     #endregion
-
-    Write-DagLog 'All selected databases are members of the global primary availability group.' SUCCESS
 }

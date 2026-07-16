@@ -104,6 +104,10 @@ function New-DagPlan {
     .OUTPUTS
         The fully-populated plan object.
     #>
+    param(
+        [ValidateRange(1, 10)]
+        [int]$MaxConcurrentSeeds = 3
+    )
 
     Write-DagBanner 'STEP 1 of 7 — BUILD THE PLAN'
     Write-Host 'Everything is asked now. Once the plan is confirmed the run is unattended.' -ForegroundColor DarkGray
@@ -304,6 +308,7 @@ global primary.
 
         IsCrossVersion          = $crossVersion
         SeedingMode             = $seedingMode
+        MaxConcurrentSeeds      = $MaxConcurrentSeeds
         ShareRoot               = $shareRoot
         StripeCount             = $stripeCount
         TLogIntervalMinutes     = $tlogInterval
@@ -326,6 +331,9 @@ function Show-DagPlanSummary {
     Write-Host 'Distributed availability group' -ForegroundColor White
     Write-Host "  Name                : $($Plan.DagName)"
     Write-Host "  Seeding             : $($Plan.SeedingMode)"
+    if ($Plan.SeedingMode -eq 'AUTOMATIC') {
+        Write-Host "  Max concurrent seed : $($Plan.MaxConcurrentSeeds) database(s) at a time"
+    }
     Write-Host "  DNS domain          : $($Plan.Domain)"
     Write-Host ''
     Write-Host "Global primary AG '$($Plan.GlobalAgName)'  [$(Get-DagSqlVersionName $Plan.GlobalMajorVersion)]" -ForegroundColor White
