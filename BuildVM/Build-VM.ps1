@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build-VM — Interactive, prompt-driven builder for internet-connected
+    Build-VM - Interactive, prompt-driven builder for internet-connected
     Windows Server 2025 Hyper-V VMs.
 
     Designed so any teammate on a Windows machine with Hyper-V can run it with
@@ -32,18 +32,18 @@ $ErrorActionPreference = "Stop"
 # ============================================================================
 $Script:VMCpuCount       = 2
 $Script:VMMemoryBytes     = 4GB          # assigned RAM
-$Script:VMOSDiskGB        = 80           # dynamic — only consumes what is used
+$Script:VMOSDiskGB        = 80           # dynamic - only consumes what is used
 $Script:AdministratorUser = "Administrator"
 $Script:AdministratorPass = "Connect123"
 $Script:VMAdminUser       = "VMAdmin"
 $Script:VMAdminPass       = "Connect123"
 
 $Script:WinServerISOName  = "WindowsServer2025.iso"
-# Direct Windows Server 2025 evaluation ISO (64-bit, English) — build 26100,
+# Direct Windows Server 2025 evaluation ISO (64-bit, English) - build 26100,
 # file 26100.*.SERVER_EVAL_x64FRE_en-us.iso. NOTE: linkid=2195280 is the older
-# Server 2022 ISO — do not use it here. If Microsoft ever retires this link,
+# Server 2022 ISO - do not use it here. If Microsoft ever retires this link,
 # download manually from the Evaluation Center and drop the file in the ISOs
-# folder — the script detects it automatically.
+# folder - the script detects it automatically.
 $Script:WinServerISOUrl   = "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us"
 $Script:WinServerEvalPage = "https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2025"
 
@@ -95,7 +95,7 @@ function Write-Banner {
 }
 
 # ============================================================================
-#  Preflight — Administrator + Hyper-V availability
+#  Preflight - Administrator + Hyper-V availability
 # ============================================================================
 function Test-Prerequisites {
     if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -118,7 +118,7 @@ function Test-Prerequisites {
 
     $svc = Get-Service -Name vmms -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -ne 'Running') {
-        Write-Log "Hyper-V Virtual Machine Management service is not running — starting it..." WARN
+        Write-Log "Hyper-V Virtual Machine Management service is not running - starting it..." WARN
         try { Start-Service vmms -ErrorAction Stop } catch {
             Write-Log "Could not start the Hyper-V service (vmms): $_" ERROR
             exit 1
@@ -161,10 +161,10 @@ function ConvertTo-ComputerName {
 }
 
 # ============================================================================
-#  Step 1 — choose storage location (scans local + external drives)
+#  Step 1 - choose storage location (scans local + external drives)
 # ============================================================================
 function Select-StorageRoot {
-    Write-Banner "STEP 1 of 4  —  Choose where to store the VM" 'Cyan'
+    Write-Banner "STEP 1 of 4  -  Choose where to store the VM" 'Cyan'
     Write-Log "Scanning available drives (local and external)..." INFO
 
     $volumes = Get-Volume | Where-Object {
@@ -209,7 +209,7 @@ function Select-StorageRoot {
     if ($sel.FreeGB -lt 60) {
         Write-Log "Drive $($sel.Letter): has only $($sel.FreeGB) GB free (60 GB recommended)." WARN
         if (-not (Read-YesNo "  Continue anyway?" $false)) {
-            throw "Cancelled — insufficient free space."
+            throw "Cancelled - insufficient free space."
         }
     }
     if ($sel.Type -eq 'Removable') {
@@ -232,20 +232,20 @@ function Select-StorageRoot {
 }
 
 # ============================================================================
-#  Step 2 — acquire the Windows Server 2025 ISO (download once, reuse after)
+#  Step 2 - acquire the Windows Server 2025 ISO (download once, reuse after)
 # ============================================================================
 function Get-WindowsServerISO {
     param([string]$ISOPath)
-    Write-Banner "STEP 2 of 4  —  Windows Server 2025 ISO" 'Cyan'
+    Write-Banner "STEP 2 of 4  -  Windows Server 2025 ISO" 'Cyan'
 
     $dest = Join-Path $ISOPath $Script:WinServerISOName
     if ((Test-Path $dest) -and (Get-Item $dest).Length -gt 1GB) {
         $sizeGB = [math]::Round((Get-Item $dest).Length / 1GB, 2)
-        Write-Log "ISO already present ($sizeGB GB) — reusing: $dest" SUCCESS
+        Write-Log "ISO already present ($sizeGB GB) - reusing: $dest" SUCCESS
         return $dest
     }
 
-    Write-Log "ISO not found locally — downloading (this is a one-time ~5 GB download)..." INFO
+    Write-Log "ISO not found locally - downloading (this is a one-time ~5 GB download)..." INFO
     Write-Log "  From: $Script:WinServerISOUrl" INFO
     Write-Log "  To:   $dest" INFO
 
@@ -257,7 +257,7 @@ function Get-WindowsServerISO {
             -ErrorAction Stop
         if ((Test-Path $dest) -and (Get-Item $dest).Length -gt 1GB) { $ok = $true }
     } catch {
-        Write-Log "BITS download failed: $_ — trying an alternate method..." WARN
+        Write-Log "BITS download failed: $_ - trying an alternate method..." WARN
         if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
     }
 
@@ -279,7 +279,7 @@ function Get-WindowsServerISO {
         return $dest
     }
 
-    # Manual fallback — poll until the file appears
+    # Manual fallback - poll until the file appears
     Write-Host ""
     Write-Host "  Automatic download did not succeed." -ForegroundColor Yellow
     Write-Host "  Download the ISO manually:" -ForegroundColor Yellow
@@ -298,7 +298,7 @@ function Get-WindowsServerISO {
 }
 
 # ============================================================================
-#  Networking — resolve a switch that gives the guest internet access
+#  Networking - resolve a switch that gives the guest internet access
 # ============================================================================
 function Resolve-InternetSwitch {
     # 1. Default Switch (NAT + DHCP, present on Windows client Hyper-V)
@@ -315,7 +315,7 @@ function Resolve-InternetSwitch {
     }
 
     # 3. Create a private NAT switch (guest gets a static IP after boot)
-    Write-Log "No Default/External switch found — creating a NAT switch '$Script:FallbackSwitch'." WARN
+    Write-Log "No Default/External switch found - creating a NAT switch '$Script:FallbackSwitch'." WARN
     if (-not (Get-VMSwitch -Name $Script:FallbackSwitch -ErrorAction SilentlyContinue)) {
         New-VMSwitch -Name $Script:FallbackSwitch -SwitchType Internal -ErrorAction Stop | Out-Null
     }
@@ -344,7 +344,7 @@ function Get-NextFallbackIP {
 }
 
 # ============================================================================
-#  Answer file — local Administrator account only, no MSA, RDP enabled
+#  Answer file - local Administrator account only, no MSA, RDP enabled
 # ============================================================================
 function New-BuildUnattendXml {
     param([string]$ComputerName, [string]$AdminPassword)
@@ -413,10 +413,10 @@ function New-BuildUnattendXml {
 }
 
 # ============================================================================
-#  UEFI boot files — write the BCD/boot files to the EFI System Partition.
+#  UEFI boot files - write the BCD/boot files to the EFI System Partition.
 #  Prefer the HOST's bcdboot; fall back to the applied image's bcdboot only if
 #  the host's fails. (The image's bcdboot.exe can fail to execute off a mounted
-#  guest volume — e.g. exit 0xC0E90002 with no output on the WS2025 image — while
+#  guest volume - e.g. exit 0xC0E90002 with no output on the WS2025 image - while
 #  the host's works; the reverse mismatch is also possible, hence the fallback.)
 # ============================================================================
 function Write-UefiBootFiles {
@@ -437,13 +437,13 @@ function Write-UefiBootFiles {
             return
         }
         $errors += "$($c.Label) bcdboot exit ${code}: $(($out -join '; ').Trim())"
-        Write-Log "[$VMName] $($c.Label) bcdboot did not succeed (exit $code) — trying fallback if available." WARN
+        Write-Log "[$VMName] $($c.Label) bcdboot did not succeed (exit $code) - trying fallback if available." WARN
     }
     throw "[$VMName] Could not write UEFI boot files. $($errors -join '  ||  ')"
 }
 
 # ============================================================================
-#  Offline Windows apply — partition the VHDX, DISM the image, inject unattend
+#  Offline Windows apply - partition the VHDX, DISM the image, inject unattend
 # ============================================================================
 function Install-WindowsToVHDX {
     param(
@@ -468,11 +468,11 @@ function Install-WindowsToVHDX {
             -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -Size 100MB
         Format-Volume -Partition $efiPart -FileSystem FAT32 -NewFileSystemLabel "System" -Confirm:$false | Out-Null
 
-        # Microsoft Reserved (MSR) — no volume, no drive letter
+        # Microsoft Reserved (MSR) - no volume, no drive letter
         New-Partition -DiskNumber $diskNum `
             -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -Size 128MB | Out-Null
 
-        # Windows partition — the ONLY drive the user sees inside the guest (C:)
+        # Windows partition - the ONLY drive the user sees inside the guest (C:)
         $winPart = New-Partition -DiskNumber $diskNum -UseMaximumSize
         Format-Volume -Partition $winPart -FileSystem NTFS -NewFileSystemLabel "Windows" -Confirm:$false | Out-Null
 
@@ -487,7 +487,7 @@ function Install-WindowsToVHDX {
         }
         Write-Log "[$VMName] EFI=${efiDrive}:  Windows=${winDrive}:" INFO
 
-        Write-Log "[$VMName] Applying Windows image (index $ImageIndex) — typically 5-15 minutes..." INFO
+        Write-Log "[$VMName] Applying Windows image (index $ImageIndex) - typically 5-15 minutes..." INFO
         $dismLog = Join-Path (Split-Path $Script:LogFile) "dism-$VMName.log"
         $proc = Start-Process dism.exe -ArgumentList @(
             "/Apply-Image",
@@ -539,7 +539,7 @@ function Wait-VMReady {
 }
 
 # ============================================================================
-#  Post-boot guest configuration — create VMAdmin, confirm RDP, static IP
+#  Post-boot guest configuration - create VMAdmin, confirm RDP, static IP
 # ============================================================================
 function Set-GuestConfig {
     param(
@@ -653,7 +653,7 @@ function New-SingleVM {
 # ============================================================================
 function Show-ConnectionInfo {
     param([PSCustomObject]$Info)
-    Write-Banner "VM READY  —  $($Info.VMName)" 'Green'
+    Write-Banner "VM READY  -  $($Info.VMName)" 'Green'
     Write-Host "  Connect with Hyper-V Manager:" -ForegroundColor White
     Write-Host "     Open 'Hyper-V Manager' -> right-click '$($Info.VMName)' -> Connect" -ForegroundColor Cyan
     if ($Info.GuestIP) {
@@ -681,9 +681,9 @@ function Show-ConnectionInfo {
 # ============================================================================
 #  MAIN
 # ============================================================================
-Write-Banner "Build-VM  —  Windows Server 2025 VM Builder" 'Magenta'
+Write-Banner "Build-VM  -  Windows Server 2025 VM Builder" 'Magenta'
 Write-Host "  Builds internet-connected Hyper-V VMs for installing client VPNs." -ForegroundColor White
-Write-Host "  Just answer the prompts — no parameters to remember." -ForegroundColor White
+Write-Host "  Just answer the prompts - no parameters to remember." -ForegroundColor White
 
 Test-Prerequisites
 
@@ -691,7 +691,7 @@ $paths  = Select-StorageRoot
 $isoPath = Get-WindowsServerISO -ISOPath $paths.ISOPath
 
 # Mount the ISO once and determine the Standard "Desktop Experience" image index.
-Write-Banner "STEP 3 of 4  —  Preparing the Windows image" 'Cyan'
+Write-Banner "STEP 3 of 4  -  Preparing the Windows image" 'Cyan'
 Write-Log "Mounting ISO to read image editions..." INFO
 $mounted   = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
 $builtVMs  = @()
@@ -711,8 +711,8 @@ try {
 
     $switch = Resolve-InternetSwitch
 
-    # ── Build loop ──────────────────────────────────────────────────────────
-    Write-Banner "STEP 4 of 4  —  Build VM(s)" 'Cyan'
+    # -- Build loop ----------------------------------------------------------
+    Write-Banner "STEP 4 of 4  -  Build VM(s)" 'Cyan'
     do {
         Write-Host ""
         $vmName = Read-NonEmpty "  What should this VM be named?"
@@ -721,7 +721,7 @@ try {
             $vmName = Read-NonEmpty "  Enter a different VM name"
         }
 
-        Write-Log "Building '$vmName' — this runs mostly unattended." STEP
+        Write-Log "Building '$vmName' - this runs mostly unattended." STEP
         try {
             $info = New-SingleVM -VMName $vmName -Paths $paths -WimPath $wimPath `
                         -ImageIndex $imageIndex -Switch $switch
@@ -740,9 +740,9 @@ finally {
     Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null
 }
 
-# ── Final rollup ────────────────────────────────────────────────────────────
+# -- Final rollup ------------------------------------------------------------
 if ($builtVMs.Count -gt 0) {
-    Write-Banner "ALL DONE  —  $($builtVMs.Count) VM(s) built" 'Green'
+    Write-Banner "ALL DONE  -  $($builtVMs.Count) VM(s) built" 'Green'
     foreach ($v in $builtVMs) {
         $rdp = if ($v.GuestIP) { "  RDP: $($v.GuestIP)" } else { "" }
         Write-Host ("  - {0}  (login {1} / {2}){3}" -f $v.VMName, $Script:VMAdminUser, $Script:VMAdminPass, $rdp) -ForegroundColor White
