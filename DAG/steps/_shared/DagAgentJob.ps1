@@ -40,6 +40,49 @@ function Get-DagFullDirectory {
     Join-DagPath -Path $ShareRoot -ChildPath @((Get-DagSafeFileToken $DagName), (Get-DagSafeFileToken $DatabaseName), 'FULL')
 }
 
+function Get-DagPlanShareRoots {
+    <#
+    .SYNOPSIS
+        The backup share roots a plan uses, as an array, newest field first.
+    .DESCRIPTION
+        ShareRoots (a list, for striping a FULL backup across several nodes) was added after
+        ShareRoot (a single path). A plan written before then, or one hand-built without the
+        list, still carries ShareRoot — so fall back to it. Always returns at least one entry
+        for a manual-seeding plan.
+    #>
+    param([Parameter(Mandatory)][psobject]$Plan)
+
+    if ($Plan.PSObject.Properties.Name -contains 'ShareRoots') {
+        $roots = @($Plan.ShareRoots | Where-Object { $_ })
+        if ($roots.Count -gt 0) { return $roots }
+    }
+    if ($Plan.PSObject.Properties.Name -contains 'ShareRoot' -and $Plan.ShareRoot) {
+        return @($Plan.ShareRoot)
+    }
+    return @()
+}
+
+function Get-DagFullDirectoryList {
+    <#
+    .SYNOPSIS
+        The per-database FULL backup folder on EVERY backup share, in the share order the
+        plan records. One entry per share; a single-share plan yields one directory.
+    .DESCRIPTION
+        Manual seeding can stripe a FULL backup across several file-server nodes at once.
+        Each node is a share root of its own, and each gets the same
+        <root>\<DagName>\<Database>\FULL sub-tree so the stripes written to it are found in
+        a predictable place on a resume.
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$ShareRoots,
+        [Parameter(Mandatory)][string]$DagName,
+        [Parameter(Mandatory)][string]$DatabaseName
+    )
+    @($ShareRoots | Where-Object { $_ } | ForEach-Object {
+        Get-DagFullDirectory -ShareRoot $_ -DagName $DagName -DatabaseName $DatabaseName
+    })
+}
+
 #region ── Job step body ─────────────────────────────────────────────────────
 
 function Get-DagTLogJobStepSql {

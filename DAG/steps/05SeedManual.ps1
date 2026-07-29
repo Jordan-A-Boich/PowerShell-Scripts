@@ -188,17 +188,18 @@ function Invoke-DagSeedManual {
             continue
         }
 
-        $rec     = Get-DagProgress -Plan $Plan -DatabaseName $db
-        $fullDir = Get-DagFullDirectory -ShareRoot $Plan.ShareRoot -DagName $Plan.DagName -DatabaseName $db
-        $logDir  = Get-DagLogDirectory  -ShareRoot $Plan.ShareRoot -DagName $Plan.DagName -DatabaseName $db
+        $rec      = Get-DagProgress -Plan $Plan -DatabaseName $db
+        $shares   = @(Get-DagPlanShareRoots -Plan $Plan)
+        $fullDirs = @(Get-DagFullDirectoryList -ShareRoots $shares -DagName $Plan.DagName -DatabaseName $db)
+        $logDir   = Get-DagLogDirectory -ShareRoot $shares[0] -DagName $Plan.DagName -DatabaseName $db
 
-        New-DagRemoteDirectory -Instance $gp -Path $fullDir
+        foreach ($d in $fullDirs) { New-DagRemoteDirectory -Instance $gp -Path $d }
         New-DagRemoteDirectory -Instance $gp -Path $logDir
 
         #region 1. FULL backup (or reuse one from an interrupted run)
         $header = Test-DagFullBackupReusable -Instance $gp -DatabaseName $db -Files @($rec.FullBackupFiles)
         if (-not $header) {
-            $files  = @(New-DagFullBackup -Instance $gp -DatabaseName $db -Directory $fullDir -StripeCount $Plan.StripeCount)
+            $files  = @(New-DagFullBackup -Instance $gp -DatabaseName $db -Directories $fullDirs -StripeCount $Plan.StripeCount)
             $header = Get-DagBackupHeader -Instance $gp -Files $files
 
             $rec.FullBackupFiles   = @($files)

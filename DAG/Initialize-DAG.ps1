@@ -178,6 +178,16 @@ function Restore-DagPlanShape {
             $Plan | Add-Member -NotePropertyName MaxConcurrentSeeds -NotePropertyValue 3
         }
     }
+    # ShareRoots (a list, for striping a FULL backup across several nodes) was added after
+    # ShareRoot (a single path). A plan written before then never recorded the list; seed it
+    # from the single path so a resumed run stripes across exactly what it did before — one
+    # share. A plan that has both keeps its list.
+    if ($Plan.PSObject.Properties.Name -notcontains 'ShareRoots') {
+        $seed = if (($Plan.PSObject.Properties.Name -contains 'ShareRoot') -and $Plan.ShareRoot) { @($Plan.ShareRoot) } else { @() }
+        $Plan | Add-Member -NotePropertyName ShareRoots -NotePropertyValue $seed
+    }
+    $Plan.ShareRoots = ConvertTo-DagArray $Plan.ShareRoots
+
     $Plan.FileLayout = ConvertTo-DagArray $Plan.FileLayout
     foreach ($entry in $Plan.FileLayout) {
         $entry.Files = ConvertTo-DagArray $entry.Files

@@ -137,13 +137,14 @@ ADD DATABASE $(ConvertTo-DagQuotedName $DatabaseName);
         Write-DagLog "  [$DatabaseName] added to [$($Plan.GlobalAgName)]; automatic seeding to local secondaries..." INFO
 
     } else {
-        # MANUAL: back up to the share, restore NORECOVERY on each local secondary, then join.
-        $fullDir = Get-DagFullDirectory -ShareRoot $Plan.ShareRoot -DagName $Plan.DagName -DatabaseName $DatabaseName
-        $logDir  = Get-DagLogDirectory  -ShareRoot $Plan.ShareRoot -DagName $Plan.DagName -DatabaseName $DatabaseName
-        New-DagRemoteDirectory -Instance $gp -Path $fullDir
+        # MANUAL: back up to the share(s), restore NORECOVERY on each local secondary, then join.
+        $shares   = @(Get-DagPlanShareRoots -Plan $Plan)
+        $fullDirs = @(Get-DagFullDirectoryList -ShareRoots $shares -DagName $Plan.DagName -DatabaseName $DatabaseName)
+        $logDir   = Get-DagLogDirectory -ShareRoot $shares[0] -DagName $Plan.DagName -DatabaseName $DatabaseName
+        foreach ($d in $fullDirs) { New-DagRemoteDirectory -Instance $gp -Path $d }
         New-DagRemoteDirectory -Instance $gp -Path $logDir
 
-        $fullFiles = @(New-DagFullBackup -Instance $gp -DatabaseName $DatabaseName -Directory $fullDir -StripeCount $Plan.StripeCount)
+        $fullFiles = @(New-DagFullBackup -Instance $gp -DatabaseName $DatabaseName -Directories $fullDirs -StripeCount $Plan.StripeCount)
         $header    = Get-DagBackupHeader -Instance $gp -Files $fullFiles
 
         # No log backups exist for this chain yet, so there is nothing to probe with. That

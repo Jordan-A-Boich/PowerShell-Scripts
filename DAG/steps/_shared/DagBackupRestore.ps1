@@ -178,22 +178,44 @@ function New-DagFullBackup {
     <#
     .SYNOPSIS
         Non-copy-only, compressed, checksummed FULL backup striped across N files.
+
+    .DESCRIPTION
+        When more than one directory is supplied the stripes are dealt out round-robin
+        across them, one per directory before any directory takes a second. That is what
+        lets a backup fan out over several file-server nodes at once — the same trick a
+        hand-written `BACKUP ... TO DISK = a, DISK = b, DISK = c` uses to add each node's
+        write bandwidth to the total — and, because the restore reads the same set of
+        files back from wherever they were written, no extra bookkeeping is needed on the
+        way in. A single directory behaves exactly as before: every stripe lands in it.
+
+    .PARAMETER Directories
+        One or more backup directories. Each is created if it does not exist. At least one
+        stripe is written to every directory, so passing four nodes guarantees all four are
+        used even if a smaller StripeCount was recorded.
+
     .OUTPUTS
-        string[] — the stripe paths written.
+        string[] — the stripe paths written, in stripe order.
     #>
     param(
         [Parameter(Mandatory)][string]$Instance,
         [Parameter(Mandatory)][string]$DatabaseName,
-        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string[]]$Directories,
         [int]$StripeCount = 4
     )
 
-    New-DagRemoteDirectory -Instance $Instance -Path $Directory
+    $Directories = @($Directories | Where-Object { $_ })
+    if ($Directories.Count -eq 0) { throw 'New-DagFullBackup: at least one backup directory is required.' }
+    foreach ($d in $Directories) { New-DagRemoteDirectory -Instance $Instance -Path $d }
+
+    # Every directory must receive at least one stripe, otherwise a node the operator
+    # named would sit idle and the point of striping across them is lost.
+    if ($StripeCount -lt $Directories.Count) { $StripeCount = $Directories.Count }
 
     $token = Get-DagSafeFileToken $DatabaseName
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
     $files = 1..$StripeCount | ForEach-Object {
-        Join-DagPath -Path $Directory -ChildPath @('{0}_FULL_{1}_{2:00}of{3:00}.bak' -f $token, $stamp, $_, $StripeCount)
+        $dir = $Directories[($_ - 1) % $Directories.Count]
+        Join-DagPath -Path $dir -ChildPath @('{0}_FULL_{1}_{2:00}of{3:00}.bak' -f $token, $stamp, $_, $StripeCount)
     }
 
     # MAXTRANSFERSIZE above 64 KB is what makes COMPRESSION legal on TDE databases and

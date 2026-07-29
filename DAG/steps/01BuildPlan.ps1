@@ -217,19 +217,41 @@ global primary.
     ) -DefaultIndex 0
     $seedingMode = if ($seedChoice -like 'AUTOMATIC*') { 'AUTOMATIC' } else { 'MANUAL' }
 
-    $shareRoot = $null; $stripeCount = 4; $tlogInterval = 15
+    $shareRoots = @(); $stripeCount = 4; $tlogInterval = 15
     if ($seedingMode -eq 'MANUAL') {
-        $shareRoot = Read-DagText -Prompt 'UNC path of the backup share (readable and writable by the SQL service account on BOTH sides)' `
-                        -Validate { param($v) $v -match '^\\\\[^\\]+\\[^\\]+' } `
-                        -ValidationMessage 'Enter a UNC path such as \\fileserver\SQLBackups.'
-        $shareRoot = $shareRoot.TrimEnd('\')
+        # One share, or several separated by commas. Several nodes let the FULL backup fan
+        # out across their combined write bandwidth — one stripe per node — which is the
+        # standard way to move a very large database quickly (e.g. striping across several
+        # backup-appliance nodes). The same files are read straight back on restore.
+        $shareInput = Read-DagText -Prompt 'UNC path(s) of the backup share, comma-separated to stripe across several nodes (readable and writable by the SQL service account on BOTH sides)' `
+                        -Validate {
+                            param($v)
+                            $parts = @($v -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                            $parts.Count -ge 1 -and @($parts | Where-Object { $_ -notmatch '^\\\\[^\\]+\\[^\\]+' }).Count -eq 0
+                        } `
+                        -ValidationMessage 'Enter a UNC path such as \\fileserver\SQLBackups, or several separated by commas: \\node1\share, \\node2\share.'
+        $shareRoots = @($shareInput -split ',' | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { $_ } | Select-Object -Unique)
 
-        $stripeCount = [int](Read-DagChoice -Title 'How many files should the FULL backup be striped across?' `
-                        -Items @(2, 4, 8, 16) -DefaultIndex 1 -Hint 'More stripes usually means faster backup and restore for large databases.')
+        if ($shareRoots.Count -gt 1) {
+            # The node count IS the stripe count: one file per node is what actually lets
+            # each node's bandwidth contribute. Log backups are small and sequential, so
+            # they stay on the first share only.
+            $stripeCount = $shareRoots.Count
+            Write-Host ''
+            Write-Host ("  Striping each FULL backup across {0} nodes, one file per node:" -f $shareRoots.Count) -ForegroundColor DarkGray
+            foreach ($s in $shareRoots) { Write-Host "    - $s" -ForegroundColor DarkGray }
+            Write-Host ("  Transaction log backups go to the first share ({0})." -f $shareRoots[0]) -ForegroundColor DarkGray
+        } else {
+            $stripeCount = [int](Read-DagChoice -Title 'How many files should the FULL backup be striped across?' `
+                            -Items @(2, 4, 8, 16) -DefaultIndex 1 -Hint 'More stripes usually means faster backup and restore for large databases.')
+        }
 
         $tlogInterval = [int](Read-DagChoice -Title 'How often should transaction logs be backed up while seeding runs?' `
                         -Items @(5, 10, 15, 30) -DefaultIndex 2 -Hint 'A log backup job is created on the global primary AG for the duration of the seed.')
     }
+    # The first share is the canonical root: log backups, the log backup job and the
+    # competing-backup scan all key off it. The full list drives FULL backup striping.
+    $shareRoot = if ($shareRoots.Count -gt 0) { $shareRoots[0] } else { $null }
     #endregion
 
     #region Database selection
@@ -310,6 +332,7 @@ global primary.
         SeedingMode             = $seedingMode
         MaxConcurrentSeeds      = $MaxConcurrentSeeds
         ShareRoot               = $shareRoot
+        ShareRoots              = @($shareRoots)
         StripeCount             = $stripeCount
         TLogIntervalMinutes     = $tlogInterval
         FileLayoutMode          = $fileLayoutMode
@@ -347,10 +370,17 @@ function Show-DagPlanSummary {
     Write-Host "  Listener URL        : $($Plan.ForwarderListenerUrl)"
 
     if ($Plan.SeedingMode -eq 'MANUAL') {
+        $shares = @(if ($Plan.PSObject.Properties.Name -contains 'ShareRoots' -and $Plan.ShareRoots) { $Plan.ShareRoots } else { $Plan.ShareRoot })
         Write-Host ''
         Write-Host 'Manual seeding' -ForegroundColor White
-        Write-Host "  Backup share        : $($Plan.ShareRoot)"
-        Write-Host "  FULL backup stripes : $($Plan.StripeCount)"
+        if ($shares.Count -gt 1) {
+            Write-Host "  Backup shares       : $($shares.Count) nodes, FULL striped one file per node"
+            foreach ($s in $shares) { Write-Host "                        - $s" }
+            Write-Host "  Log backups         : $($shares[0])"
+        } else {
+            Write-Host "  Backup share        : $($Plan.ShareRoot)"
+            Write-Host "  FULL backup stripes : $($Plan.StripeCount)"
+        }
         Write-Host "  Log backup interval : every $($Plan.TLogIntervalMinutes) minutes"
         Show-DagFileLayoutSummary -Plan $Plan
     }

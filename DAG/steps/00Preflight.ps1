@@ -229,20 +229,26 @@ Drop or rename [$db] on '$fr', or exclude it from this run, then re-run.
 
     #region Manual seeding prerequisites
     if ($Plan.SeedingMode -eq 'MANUAL') {
-        Write-DagLog "Validating backup share '$($Plan.ShareRoot)' from every replica..." INFO
-        foreach ($r in $allReplicas) {
-            $err = Test-DagShareWritable -Instance $r -Path $Plan.ShareRoot
-            if ($err) {
-                throw @"
-Replica '$r' cannot write to '$($Plan.ShareRoot)'.
+        # Every share the FULL backup will stripe across must be writable from every
+        # replica — a node that only some replicas can reach fails the restore, not the
+        # backup, and only hours later. Prove them all now.
+        $shares = @(Get-DagPlanShareRoots -Plan $Plan)
+        Write-DagLog "Validating $($shares.Count) backup share(s) from every replica..." INFO
+        foreach ($share in $shares) {
+            foreach ($r in $allReplicas) {
+                $err = Test-DagShareWritable -Instance $r -Path $share
+                if ($err) {
+                    throw @"
+Replica '$r' cannot write to '$share'.
 
   $err
 
 The SQL Server service account on every replica of both availability groups needs read and
-write access (full control is simplest) to the backup share.
+write access (full control is simplest) to every backup share.
 "@
+                }
+                Write-DagLog "  [$r] '$share' is readable and writable." SUCCESS
             }
-            Write-DagLog "  [$r] backup share is readable and writable." SUCCESS
         }
 
         foreach ($r in $Plan.GlobalReplicas) {
