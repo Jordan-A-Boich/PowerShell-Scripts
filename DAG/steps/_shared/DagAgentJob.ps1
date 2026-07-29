@@ -136,9 +136,27 @@ DECLARE db_cur CURSOR LOCAL FAST_FORWARD FOR
          ON ag.group_id = adc.group_id AND ag.name = $(ConvertTo-DagQuotedString $GlobalAgName)
     WHERE d.state_desc      = 'ONLINE'
       AND d.recovery_model_desc IN ('FULL','BULK_LOGGED')
-      -- A log backup is illegal until the database has a full backup to chain from.
-      AND EXISTS (SELECT 1 FROM msdb.dbo.backupset AS b
-                  WHERE b.database_name = d.name AND b.type = 'D' AND b.is_copy_only = 0)
+      -- A log backup is legal only once a NON-copy-only full backup has established the log
+      -- chain. We read that from the DATABASE'S OWN state (differential_base_lsn on its data
+      -- files), not from msdb.dbo.backupset — because backup history lies in exactly the
+      -- cases that matter here:
+      --   * the last full was COPY_ONLY. Enterprise backup tools (e.g. Cohesity) take
+      --     copy-only fulls so they do not disturb the primary's chain; those never set a
+      --     differential base and never appear as is_copy_only = 0, yet the database is a
+      --     perfectly log-backable AG member.
+      --   * the database joined the AG by AUTOMATIC seeding, so no full ever went through
+      --     the BACKUP API and there is no backupset row at all.
+      --   * the history was groomed away (sp_delete_backuphistory).
+      -- differential_base_lsn survives all three, and predicts BACKUP LOG legality exactly:
+      -- it is > 0 iff a real full backup established the chain (verified against copy-only,
+      -- automatically-seeded, and never-backed-up databases). A database still in
+      -- pseudo-simple mode has no differential base and genuinely cannot have its log backed
+      -- up yet; it is picked up automatically once its own seeding full backup is taken.
+      AND EXISTS (SELECT 1 FROM sys.master_files AS mf
+                  WHERE mf.database_id = d.database_id
+                    AND mf.type = 0                          -- data (ROWS) files
+                    AND mf.differential_base_lsn IS NOT NULL
+                    AND mf.differential_base_lsn > 0)
     ORDER BY s.DatabaseName;
 
 OPEN db_cur;
