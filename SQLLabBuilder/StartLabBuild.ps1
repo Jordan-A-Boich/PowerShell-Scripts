@@ -14,12 +14,19 @@
     -SQLVersion 2019.
 
 .PARAMETER Start
-    Delegates to StartLab.ps1 to power on the ENTIRE lab at once after a shutdown —
-    the domain controller plus every built cluster's SQL nodes (primary AG and any
-    add-cluster AGs) — bringing each node's data disk online and starting the
-    cluster service, SQL Server, and SQL Agent. Use this instead of re-running the
-    build once you have more than one cluster, since a plain re-run only starts the
-    primary three VMs.
+    Delegates to StartLab.ps1 to power the lab back on after a shutdown. It lists
+    every built cluster's SQL nodes (primary AG and any add-cluster AGs) and asks
+    which ones to start — the domain controller always starts — then brings each
+    selected node's data disk online and starts the cluster service, SQL Server,
+    and SQL Agent. Use this instead of re-running the build once you have more
+    than one cluster, since a plain re-run only starts the primary three VMs.
+
+.PARAMETER Nodes
+    With -Start: skips StartLab's menu and starts exactly these SQL nodes. Accepts
+    menu numbers ("1,3,4"), ranges ("1-4"), VM or computer names, "all", or "none".
+
+.PARAMETER All
+    With -Start: skips StartLab's menu and starts every built SQL node.
 
 .PARAMETER Teardown
     Delegates to TeardownLab.ps1 instead of running the build.
@@ -43,6 +50,8 @@
     .\StartLabBuild.ps1 -AddCluster
     .\StartLabBuild.ps1 -AddCluster -ContainedAG
     .\StartLabBuild.ps1 -Start
+    .\StartLabBuild.ps1 -Start -Nodes 1,3,4
+    .\StartLabBuild.ps1 -Start -All
     .\StartLabBuild.ps1 -Teardown
     .\StartLabBuild.ps1 -Teardown -Force
 #>
@@ -57,6 +66,10 @@ param(
     [switch]$AddCluster,
 
     [switch]$Start,
+
+    [string[]]$Nodes,
+
+    [switch]$All,
 
     [switch]$Teardown,
 
@@ -102,7 +115,10 @@ if ($Start) {
         Write-Error "StartLab.ps1 not found at: $startScript"
         exit 1
     }
-    & $startScript
+    $startArgs = @{}
+    if ($Nodes) { $startArgs['Nodes'] = $Nodes }
+    if ($All)   { $startArgs['All']   = $true  }
+    & $startScript @startArgs
     $startExit = if (Test-Path Variable:LASTEXITCODE) { $LASTEXITCODE } else { 0 }
     exit $startExit
 }

@@ -17,7 +17,8 @@
       4. Prints a synchronization and LSN rollup, and gives a GO or NO-GO.
       5. On GO and on your confirmation: demotes the global primary, fails the DAG over, and
          confirms the role actually moved.
-      6. Returns the DAG to asynchronous commit and prints a health rollup of the new shape.
+      6. Returns the DAG to asynchronous commit, waits for the new shape to settle, and
+         prints a health rollup of it.
 
     Why the failover is safe even though the only statement available is called
     FORCE_FAILOVER_ALLOW_DATA_LOSS:
@@ -39,6 +40,14 @@
 .PARAMETER SyncTimeoutMinutes
     How long to wait for the distributed AG to reach SYNCHRONIZED after switching to
     synchronous commit. Default 15.
+
+.PARAMETER SettleTimeoutSeconds
+    How long Step 6 waits for the new shape to settle before it judges it. A failover does
+    not finish when the role moves: the cluster-to-cluster link drops and re-establishes,
+    the new primary's secondaries reconnect, and the per-database rows are rebuilt and read
+    NOT SYNCHRONIZING until they are. Reading the DMVs immediately reports all of that as
+    failure. Default 180. Use 0 to report the state as it is the instant the failover
+    returns, which is only useful for watching that transition.
 
 .PARAMETER ReadinessOnly
     Do everything up to and including the readiness rollup, then stop. Changes nothing
@@ -66,6 +75,9 @@ param(
 
     [ValidateRange(1, 720)]
     [int]$SyncTimeoutMinutes = 15,
+
+    [ValidateRange(0, 3600)]
+    [int]$SettleTimeoutSeconds = 180,
 
     [switch]$ReadinessOnly,
 
@@ -241,7 +253,7 @@ try {
     }
 
     #region Step 6: settle
-    $settled = Invoke-DagSettle -Context $ctx
+    $settled = Invoke-DagSettle -Context $ctx -SettleTimeoutSeconds $SettleTimeoutSeconds
 
     Write-DagBanner ('DONE in {0}' -f (Format-DagDuration ((Get-Date) - $started)))
     Write-Host ''
@@ -250,7 +262,12 @@ try {
     Write-Host ''
 
     if (-not $settled.Healthy) {
-        Write-DagLog 'The failover completed, but the health rollup reported problems (see above).' WARN
+        if ($settled.Settled) {
+            Write-DagLog 'The failover completed, but the health rollup reported problems (see above).' WARN
+        } else {
+            Write-DagLog 'The failover completed. Parts of the distributed availability group had not finished' WARN
+            Write-DagLog "reconnecting within ${SettleTimeoutSeconds}s (see above) — check them again before acting on them." WARN
+        }
         exit 1
     }
     Write-DagLog "Distributed availability group [$($ctx.DagName)] failed over successfully." SUCCESS

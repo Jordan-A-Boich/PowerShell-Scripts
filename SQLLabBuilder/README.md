@@ -38,13 +38,42 @@ The build takes **30–45 minutes** depending on hardware. A summary report with
 
 ## Starting the Lab After a Shutdown
 
-Use `-Start` to power the **whole lab** back on in one command:
+Use `-Start` to power the lab back on in one command:
 
 ```powershell
 .\StartLabBuild.ps1 -Start
 ```
 
-This starts the domain controller first (the SQL nodes need it for DNS, the cluster witness, and Kerberos), then every built cluster's SQL nodes — the primary AG **and any add-cluster AGs** — and finally brings each node's data disk online and starts the cluster service, SQL Server, and SQL Agent. It's idempotent: already-running VMs and already-online disks are left alone. No version or flags needed — it discovers what's built.
+It lists every built SQL node VM — the primary AG's nodes **and any add-cluster AGs'** — with its current state and startup RAM, and asks which ones you want:
+
+```
+Available SQL node VMs (host RAM free: 19 GB)
+----------------------------------------------------------------------
+  [1] SQLLab-SQL1   Off       primary    AG SQLLabAG           4 GB
+  [2] SQLLab-SQL2   Off       primary    AG SQLLabAG           4 GB
+  [3] SQLLab-SQL3   Off       cluster 2  AG SQLLabAG2          4 GB
+  [4] SQLLab-SQL4   Off       cluster 2  AG SQLLabAG2          4 GB
+----------------------------------------------------------------------
+  The domain controller (SQLLab-DC) always starts.
+  Enter numbers (1,3,4), a range (1-4), 'all', or 'none' for DC only.
+  Press Enter for all.
+
+Which SQL nodes should be started?: 1,2,3
+```
+
+The **domain controller always starts** — every SQL node needs it for DNS, the cluster witness, and Kerberos — so only the SQL nodes are selectable. Selections can be numbers (`1,3,4`), ranges (`1-4`), VM or computer names (`SQLLab-SQL1`), `all`, or `none` for a DC-only start. If the selection needs more startup RAM than the host has free, you get a warning before anything is started.
+
+After the selected VMs are up, each one's data disk is brought online and the cluster service, SQL Server, and SQL Agent are started. It's idempotent: already-running VMs and already-online disks are left alone. Nodes you didn't pick are left untouched — if that leaves only one replica of an AG running, the summary calls out that the cluster has no quorum partner.
+
+To skip the prompt (scripts, scheduled tasks), pass the selection up front:
+
+```powershell
+.\StartLabBuild.ps1 -Start -All          # every SQL node, no prompt
+.\StartLabBuild.ps1 -Start -Nodes 1,3,4  # menu numbers
+.\StartLabBuild.ps1 -Start -Nodes 1-4    # a range
+.\StartLabBuild.ps1 -Start -Nodes SQLLab-SQL1,SQLLab-SQL2
+.\StartLabBuild.ps1 -Start -Nodes none   # domain controller only
+```
 
 > Prefer `-Start` once you have more than one cluster. Re-running the plain build command (below) only knows about the primary three VMs, so it won't start the added clusters' nodes.
 
@@ -249,7 +278,7 @@ Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V
 SQLLabBuilder/
 ├── README.md
 ├── StartLabBuild.ps1       # Main entry point (build, start, teardown, add-cluster)
-├── StartLab.ps1            # Power the whole lab on (all clusters) after a shutdown
+├── StartLab.ps1            # Power the lab on after a shutdown (pick which nodes)
 ├── AddCluster.ps1          # Add another 2-node AG on its own WSFC
 ├── TeardownLab.ps1         # Lab teardown (primary + added clusters)
 ├── config.ps1              # All names, IPs, passwords, paths + Get-LabClusterContext

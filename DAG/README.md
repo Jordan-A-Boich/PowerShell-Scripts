@@ -93,6 +93,10 @@ directory for that replica, so the restore never fails for lack of an answer.
 .\Initialize-DAG.ps1 -Credential $cred      # supply a SQL login for unattended runs
 ```
 
+`-RemoveLogBackupJob` picks the job from a saved plan, so run it **before** clearing that plan out
+with `Manage-Plans.ps1` — or let `Manage-Plans.ps1` remove the job itself, which it does for every
+plan you select.
+
 ---
 
 ## Choosing a seeding mode
@@ -197,6 +201,43 @@ never the source of truth**: delete it and the next run re-reads everything from
 
 ---
 
+## Clearing out old plans
+
+Both entry points offer **every** file in `DAG\state`, and neither checks that the distributed AG
+still exists — so a DAG you tore down keeps turning up in the menu, pointing at servers and
+databases that may be long gone. `Manage-Plans.ps1` probes each saved plan against the live
+servers and clears the dead ones out by number:
+
+```powershell
+.\Manage-Plans.ps1                 # probe, then pick: 1,3,4 or 1-3 or all
+.\Manage-Plans.ps1 -ListOnly       # just show what is saved and what state it is in
+.\Manage-Plans.ps1 -Delete         # delete the plan files instead of archiving them
+.\Manage-Plans.ps1 -RemoveBackups  # also delete each plan's <share>\<DagName> backup folder
+```
+
+```
+  [1] AG-DISTLAB                  GONE       SQLLabAG -> SQLLabAG2, 3 database(s)
+      replicas 4/4 reachable  ·  member AG(s) still present: SQLLabAG, SQLLabAG2  ·  saved 2026-08-21
+  [2] TEST-DAG                    LIVE       SQLLabAG -> SQLLabAG2, 3 database(s)
+      replicas 4/4 reachable  ·  DAG live on SQLLAB-SQL1, SQLLAB-SQL2, ...  ·  saved 2026-09-06
+  [3] VANISHED-DAG                ORPHAN     log backup job with no saved plan
+```
+
+`GONE` means no reachable replica has that distributed AG — safe to clear. `UNKNOWN` means none of
+its replicas answered, so nothing could be checked; it is never reported as gone. `LIVE` means the
+DAG still exists and needs a second confirmation, since forgetting its plan is legal but rarely
+what you meant. `ORPHAN` is a `DAG-TLogBackup-*` job on a probed server that no saved plan accounts
+for — what a hand-deleted plan file leaves behind, still taking log backups on a schedule and still
+breaking the log chain of whatever else backs those databases up.
+
+For each item you select it removes what would still reference it: the plan file (archived to
+`state\archive`, which neither script enumerates, or deleted with `-Delete`) and the
+`DAG-TLogBackup-<DagName>` job on every replica that still has it. **It changes nothing else in SQL
+Server** — no distributed AG, availability group or database is dropped. To tear a lab DAG down,
+use `lab\Reset-DagLab.ps1`.
+
+---
+
 ## Failing over, when you are ready
 
 Use `Failover-DAG.ps1`. It is prompt-driven like `Initialize-DAG.ps1`, and it does the whole
@@ -206,9 +247,21 @@ failover itself, then back to asynchronous commit and a health rollup.
 ```powershell
 .\Failover-DAG.ps1                # interview, readiness rollup, then ask before failing over
 .\Failover-DAG.ps1 -ReadinessOnly # dry run: rollup only, changes nothing
+.\Failover-DAG.ps1 -SettleTimeoutSeconds 300   # allow longer for the new shape to reconnect
 ```
 
 Stop application traffic against the global primary first. Everything else it handles.
+
+**The final rollup waits before it judges.** A failover is not finished the moment the role moves:
+the link between the two clusters drops and re-establishes, the new primary's own secondaries
+reconnect to a replica that has just changed role, and the per-database rows in
+`sys.dm_hadr_database_replica_states` are rebuilt — reading `NOT SYNCHRONIZING` with a hardened LSN
+of `0` until they are. Read a second after the failover, all of that looks like a wall of failures
+that is gone by the time you look again. Step 6 therefore polls until the new shape has actually
+settled (`-SettleTimeoutSeconds`, default 180) and only then decides what to call a problem. If the
+window expires, what is still outstanding is reported as **not finished reconnecting**, not as a
+fault — while states that never clear on their own, such as suspended data movement or a database
+that is not online, are always reported as problems, with the statement that fixes them.
 
 **Which side is primary is always read from the servers**, never from the saved plan — a failover
 is precisely the thing that changes it, so a tool that trusted the file would fail the DAG over in
@@ -269,6 +322,7 @@ Logs are written to `DAG\logs\Initialize-DAG_<timestamp>.log` and
 DAG\
   Initialize-DAG.ps1          entry point: interview, plan, orchestrate
   Failover-DAG.ps1            entry point: readiness rollup, go / no-go, fail over
+  Manage-Plans.ps1            entry point: probe saved plans, clear the dead ones out
   steps\
     00Preflight.ps1           validate + repair prerequisites
     01BuildPlan.ps1           all user interaction lives here
@@ -284,7 +338,7 @@ DAG\
       03Synchronize.ps1       synchronous commit, and wait for it to take effect
       04Readiness.ps1         synchronization + LSN rollup; the GO / NO-GO call
       05Failover.ps1          demote, force the failover, confirm the role moved
-      06Settle.ps1            back to asynchronous commit; post-failover health
+      06Settle.ps1            back to asynchronous commit; settle wait; post-failover health
     _shared\
       DagCommon.ps1           logging, T-SQL quoting, retry, waits
       DagSql.ps1              connections; long ops with percent-complete
