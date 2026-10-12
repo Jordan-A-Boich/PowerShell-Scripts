@@ -71,18 +71,93 @@ manual seeding — once, in the interview:
 
 | Option | What it does |
 |---|---|
-| **Reuse the current file structure** | Each file keeps the path it has on the global primary. Directories that do not exist on a target are **created** there. |
+| **Reuse the layout** | Each file keeps the directory it has on the global primary. Directories that do not exist on a target are **created** there. |
 | **Target defaults** | Every data file goes to the target's `InstanceDefaultDataPath`, every log file to its `InstanceDefaultLogPath`. |
-| **Choose** | You name the directories: one pair for all replicas, a pair per replica, or the destination of every individual file. |
+| **Choose where they land** | You pick the directories, at whichever precision the job needs — see below. |
 
-Preflight proves the choice before any data moves: every directory the restores will need is
-probed on every target and created if missing. A path no target can satisfy — `E:\SQLData` on a
-server with no `E:` drive — fails there, in seconds, naming the alternatives, rather than hours
-into a restore.
+Before it asks, it shows you both sides: the source databases grouped by database with every
+file and its size, and then, per replica being restored onto, every directory that replica
+could take them — the directories its databases already use, its instance defaults, folders
+that already exist on its volumes, and the volume roots — each with free space.
 
-Individual file destinations are matched by **logical name**. A file added to the database
-after the plan was built has no destination of its own and falls back to the chosen data or log
-directory for that replica, so the restore never fails for lack of an answer.
+#### Choosing where they land
+
+Consolidating a sprawling source layout onto a tidier target is the usual reason to touch this
+at all, so **Choose** has two independent axes.
+
+**How precisely** you want to place them:
+
+| Precision | What you answer | Questions |
+|---|---|---|
+| **All databases together** | One data directory and one log directory for every file. | 2 |
+| **Per database** | A data directory and a log directory for each database. All of that database's data files go to one place, all of its log files to another. | 2 per database |
+| **Per file** | A directory for each individual file, so one database's data files can be split across several locations. | 1 per file |
+
+**Whether the replicas differ.** Asked only when more than one replica is being restored onto,
+and defaulting to "the same on every replica", which is almost always what a forwarder AG with
+matching drive letters wants. Answer "different per replica" and each one is asked separately.
+
+So a target AG with `D:\Data`, `E:\Data` and `H:\Data` for data and `L:\Log` and `M:\Log` for
+logs can send `Database1` to `D:\Data` + `L:\Log` and `Database2` to `H:\Data` + `M:\Log`
+(per database), or spread `Database1`'s three data files across all three data locations
+(per file).
+
+Every directory is picked from a **numbered menu** of what that replica actually has, annotated
+with how many database files are already there and how much room is left on the volume. The last
+entry always lets you type a path that does not exist yet — preflight creates it. At per-file
+precision the first entry is the directory the file has today, so relocating most of a database
+and leaving the rest where it is costs one keystroke each.
+
+Nothing is committed from the answers alone. The destination of **every file on every replica**
+is resolved and printed back, with the total being written to each volume against its free
+space, and you either accept it or answer the question again:
+
+```
+Where the files will land — directories CHOSEN for this run
+  SQLLAB-SQL7
+      MigrationDB1
+          MigrationDB1               data       -> D:\Data\MigrationDB1.mdf
+          MigrationDB1_dat2          data       -> D:\Data2\MigrationDB1_dat2.ndf
+          MigrationDB1_dat3          data       -> D:\Data3\MigrationDB1_dat3.ndf
+          MigrationDB1_log           log        -> D:\Log\MigrationDB1_log.ldf
+      MigrationDB2               data -> D:\Data3    log -> D:\Log2
+      D:    288.00 MB of database files -> 19.90 GB free
+```
+
+A database whose files all land in one data directory and one log directory is summarised as
+that single line; one whose files are split is listed file by file.
+
+#### How a destination is decided
+
+At restore time the file list comes from the backup media, not from the layout captured when the
+plan was built, and each file walks four levels — most specific first, every level allowed to be
+absent:
+
+1. a destination recorded for **this exact file** (matched by logical name)
+2. the directories recorded for **its database**
+3. the directories recorded for **its replica**
+4. the replica's **instance defaults**
+
+Level 3 is always populated, whatever precision you chose. That is what catches a file added to
+the database after the plan was built: it has no destination of its own, so it lands in that
+replica's chosen data or log directory rather than failing the restore.
+
+#### What preflight proves
+
+Before any data moves, every directory the restores will need is probed on every target and
+created if missing. A path no target can satisfy — `E:\SQLData` on a server with no `E:` drive —
+fails there, in seconds, naming the alternatives, rather than hours into a restore.
+
+It also catches **two files resolving to the same path** on one replica, which the flattening
+precisions make easy to do by accident: two databases whose files live in different source
+directories can share a file *name*. SQL Server would restore the first and refuse the second,
+after the full backup had already been taken and shipped. Preflight names both files and tells
+you to give one of them a destination of its own.
+
+Finally it reports how much each volume is being asked to hold against what it has free. That is
+a **warning, never a failure** — a volume that cannot hold today's file sizes is worth saying out
+loud, and is also routinely thin-provisioned or about to be extended, so it stays the operator's
+call.
 
 ### Other switches
 

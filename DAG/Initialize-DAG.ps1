@@ -19,7 +19,10 @@
         (striped compressed backup to a share, restore, log-chain catch-up, join).
       * For manual seeding, puts the restored data and log files where you tell it to:
         reuse the structure the databases have today, take each target's own default
-        directories, or name the directories — or every individual file — yourself.
+        directories, or choose the directories yourself — for everything at once, per
+        database, or per individual file, the same on every replica or not. Each one is
+        picked from a numbered list of what that replica actually has, with free space,
+        and the destination of every file is shown back for approval before anything runs.
       * Settles the DAG into asynchronous commit and prints a health rollup.
 
     Assumptions:
@@ -188,9 +191,28 @@ function Restore-DagPlanShape {
     }
     $Plan.ShareRoots = ConvertTo-DagArray $Plan.ShareRoots
 
+    # Per-database directories (and the Precision that produced them) were added after
+    # per-replica and per-file ones. An older entry simply has neither, and the resolver
+    # treats a missing level as "nothing recorded here" and falls through to the next —
+    # so the members only have to exist, not be populated, for a resumed plan to behave
+    # exactly as it did when it was written.
     $Plan.FileLayout = ConvertTo-DagArray $Plan.FileLayout
     foreach ($entry in $Plan.FileLayout) {
-        $entry.Files = ConvertTo-DagArray $entry.Files
+        foreach ($p in 'Precision','Databases') {
+            if ($entry.PSObject.Properties.Name -notcontains $p) {
+                $entry | Add-Member -NotePropertyName $p -NotePropertyValue $null
+            }
+        }
+        $entry.Databases = ConvertTo-DagArray $entry.Databases
+        $entry.Files     = ConvertTo-DagArray $entry.Files
+        foreach ($f in $entry.Files) {
+            if ($f.PSObject.Properties.Name -notcontains 'TargetDirectory') {
+                $f | Add-Member -NotePropertyName TargetDirectory -NotePropertyValue $null
+            }
+            if ($f.PSObject.Properties.Name -notcontains 'TargetPath') {
+                $f | Add-Member -NotePropertyName TargetPath -NotePropertyValue $null
+            }
+        }
     }
 
     foreach ($p in 'GlobalReplicas','GlobalSecondaries','ForwarderReplicas','ForwarderSecondaries','Databases','Progress') {
