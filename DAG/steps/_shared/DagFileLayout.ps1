@@ -30,6 +30,11 @@
     M:\Log (DATABASE precision), or scatter one database's three data files across all
     three data locations (FILE precision).
 
+    DATABASE and FILE precision are answered on the placement board (DagPlacementBoard.ps1):
+    the operator names the set of directories once, everything is balanced across them by
+    free space, and adjustments are commands against one table with a running per-volume
+    ledger - not one menu per database.
+
     Directories are never typed blind. Each prompt is a numbered menu built from what the
     target replica actually has — the directories its databases already use, its instance
     defaults, folders that already exist on its volumes, and the volume roots themselves,
@@ -496,22 +501,14 @@ function Read-DagPathChoice {
     foreach ($c in $candidates) {
         if ($KeepPath -and $c.Path.TrimEnd('\').ToLowerInvariant() -eq $KeepPath.TrimEnd('\').ToLowerInvariant()) { continue }
 
-        $notes = New-Object System.Collections.Generic.List[string]
-        switch ($c.Origin) {
-            'default' { $notes.Add(('default {0} location' -f $Kind.ToLower())) }
-            'inuse'   { $notes.Add(('holds {0} database file(s)' -f $c.FileCount)) }
-            'folder'  { $notes.Add('existing folder, empty') }
-            'volume'  { $notes.Add('volume root') }
-        }
-        if ($c.IsDefault -and $c.Origin -ne 'default') { $notes.Add(('default {0} location' -f $Kind.ToLower())) }
-        $notes.Add((Get-DagFreeSpaceText $c.FreeBytes))
+        $notes = Get-DagPathCandidateNote -Candidate $c -Kind $Kind -FreeBytes $c.FreeBytes
 
         if ($Default -and $c.Path.TrimEnd('\').ToLowerInvariant() -eq $Default.TrimEnd('\').ToLowerInvariant()) {
             $defaultIndex = $items.Count
         }
         $items.Add([pscustomobject]@{
             Path  = $c.Path
-            Label = ($fmt -f $c.Path, ($notes -join ' · '))
+            Label = ($fmt -f $c.Path, $notes)
         })
     }
 
@@ -750,23 +747,26 @@ function Read-DagCustomFileLayout {
     $rCount  = $RestoreTargets.Count
 
     #region Precision
+    # DATABASE and FILE are not a question per database or per file any more: the operator
+    # names the set of directories once and adjusts an auto-balanced board. See
+    # DagPlacementBoard.ps1 for why.
     $precisionItems = @(
         [pscustomobject]@{
             Key   = 'ALL'
             Label = ('ALL DATABASES TOGETHER — one data directory and one log directory for every file.' + "`n" +
-                     ('        {0} question(s) per replica.' -f 2))
+                     '        2 questions.')
         }
         [pscustomobject]@{
             Key   = 'DATABASE'
-            Label = ('PER DATABASE — a data directory and a log directory for each database. All of a' + "`n" +
-                     '        database''s data files go to one place, all of its log files to another.' + "`n" +
-                     ('        {0} question(s) per replica, for {1} database(s).' -f (2 * $dbCount), $dbCount))
+            Label = ('PER DATABASE — each database''s data files go to one directory and its log files to' + "`n" +
+                     '        another, spread across several drives. You pick the drives once; the' + "`n" +
+                     ('        {0} database(s) are balanced across them automatically by free space, then you' -f $dbCount) + "`n" +
+                     '        adjust on one board that keeps a running total per drive.')
         }
         [pscustomobject]@{
             Key   = 'FILE'
-            Label = ('PER FILE — a directory for each individual data and log file, so one database''s' + "`n" +
-                     '        data files can be split across several locations.' + "`n" +
-                     ('        {0} question(s) per replica, for {1} file(s).' -f $fileCount, $fileCount))
+            Label = ('PER FILE — the same board, one row per file, so a database''s data files can be' + "`n" +
+                     ('        split across drives. {0} file(s).' -f $fileCount))
         }
     )
     $precision = (Read-DagChoice -DefaultIndex 0 -Items $precisionItems -Display { param($i) $i.Label } `
@@ -783,6 +783,11 @@ function Read-DagCustomFileLayout {
         $perReplica = ($same -notlike 'The SAME*')
     }
     #endregion
+
+    if ($precision -ne 'ALL') {
+        return @(Read-DagPlacementLayout -Precision $precision -Databases $Databases -RestoreTargets $RestoreTargets `
+                    -SourceFiles $SourceFiles -Catalogs $Catalogs -PerReplica $perReplica)
+    }
 
     $entries = New-Object System.Collections.Generic.List[psobject]
     $template = $null   # answers from the first replica, reused when they are shared
@@ -803,8 +808,7 @@ function Read-DagCustomFileLayout {
             Write-Host "Directories — used on every replica ($($RestoreTargets -join ', '))" -ForegroundColor Cyan
         }
 
-        $entry = Read-DagFileLayoutEntry -Replica $t -Precision $precision -Databases $Databases `
-                    -SourceFiles $SourceFiles -Catalog $Catalogs[$t]
+        $entry = Read-DagFileLayoutEntry -Replica $t -Catalog $Catalogs[$t]
         $entries.Add($entry)
         if (-not $template) { $template = $entry }
     }
@@ -815,99 +819,29 @@ function Read-DagCustomFileLayout {
 function Read-DagFileLayoutEntry {
     <#
     .SYNOPSIS
-        One replica's worth of answers at the chosen precision.
+        One replica's worth of answers at ALL precision: one data and one log directory.
     .DESCRIPTION
-        The replica-level DataPath / LogPath is always filled in, even at FILE precision.
-        It is the fallback for a file that joins the database after the plan was built, and
-        having it means no resolution ever has to reach for an instance default it might
-        not have.
+        DATABASE and FILE precision are answered on the placement board
+        (Read-DagPlacementLayout), which produces entries of the same shape.
     #>
     param(
         [Parameter(Mandatory)][string]$Replica,
-        [Parameter(Mandatory)][ValidateSet('ALL','DATABASE','FILE')][string]$Precision,
-        [Parameter(Mandatory)][string[]]$Databases,
-        [Parameter(Mandatory)][hashtable]$SourceFiles,
         [Parameter(Mandatory)][psobject]$Catalog
     )
 
     $defData = Get-DagDefaultPathText $Catalog.InstanceInfo.DefaultDataPath
     $defLog  = Get-DagDefaultPathText $Catalog.InstanceInfo.DefaultLogPath
 
-    $dataPath = $null
-    $logPath  = $null
-    $dbEntries   = New-Object System.Collections.Generic.List[psobject]
-    $fileEntries = New-Object System.Collections.Generic.List[psobject]
-
-    if ($Precision -eq 'ALL') {
-        $dataPath = Read-DagPathChoice -Prompt '  Data file directory — for every data file' -Catalog $Catalog -Kind Data -Default $defData
-        $logPath  = Read-DagPathChoice -Prompt '  Log file directory — for every log file'   -Catalog $Catalog -Kind Log  -Default $defLog
-    }
-    elseif ($Precision -eq 'DATABASE') {
-        foreach ($db in $Databases) {
-            $files = @($SourceFiles[$db])
-            $dataSize = 0; $logSize = 0
-            foreach ($f in $files) {
-                if ($f.FileType -eq 'L') { $logSize += $f.SizeBytes } else { $dataSize += $f.SizeBytes }
-            }
-            $dataFiles = @($files | Where-Object { $_.FileType -ne 'L' }).Count
-            $logFiles  = @($files | Where-Object { $_.FileType -eq 'L' }).Count
-
-            Write-Host ''
-            Write-Host ('  [{0}]' -f $db) -ForegroundColor White
-            $d = Read-DagPathChoice -Catalog $Catalog -Kind Data -Default $defData `
-                    -Prompt ('  Data directory for [{0}] — {1} file(s), {2}' -f $db, $dataFiles, (Format-DagBytes $dataSize))
-            $l = Read-DagPathChoice -Catalog $Catalog -Kind Log -Default $defLog `
-                    -Prompt ('  Log directory for [{0}] — {1} file(s), {2}' -f $db, $logFiles, (Format-DagBytes $logSize))
-
-            $dbEntries.Add([pscustomobject]@{ DatabaseName = $db; DataPath = $d; LogPath = $l })
-            if (-not $dataPath) { $dataPath = $d }
-            if (-not $logPath)  { $logPath  = $l }
-        }
-    }
-    else {
-        Write-Host ''
-        Write-Host '  A directory is asked for each file; the file keeps its own name.' -ForegroundColor DarkGray
-        foreach ($db in $Databases) {
-            Write-Host ''
-            Write-Host ('  [{0}]' -f $db) -ForegroundColor White
-            foreach ($f in @($SourceFiles[$db])) {
-                $kind    = if ($f.FileType -eq 'L') { 'Log' } else { 'Data' }
-                $srcDir  = [System.IO.Path]::GetDirectoryName($f.PhysicalName)
-                $fallback = if ($f.FileType -eq 'L') { $defLog } else { $defData }
-
-                $dir = Read-DagPathChoice -Catalog $Catalog -Kind $kind -Default $fallback -KeepPath $srcDir `
-                        -Prompt ('  Directory for {0} ({1}, {2}) — now in {3}' -f `
-                                    $f.LogicalName, (Get-DagFileKindLabel $f.FileType), (Format-DagBytes $f.SizeBytes), $srcDir)
-
-                $fileEntries.Add([pscustomobject]@{
-                    DatabaseName    = $db
-                    LogicalName     = $f.LogicalName
-                    FileType        = $f.FileType
-                    TargetDirectory = $dir
-                    TargetPath      = $null
-                })
-                if ($f.FileType -eq 'L') {
-                    if (-not $logPath) { $logPath = $dir }
-                } else {
-                    if (-not $dataPath) { $dataPath = $dir }
-                }
-            }
-        }
-    }
-
-    # A database with no data file at all is not a thing, but a selection of log-only or
-    # data-only answers can still leave one side unset — fall back to the instance default
-    # so the entry is always complete.
-    if (-not $dataPath) { $dataPath = $defData }
-    if (-not $logPath)  { $logPath  = $defLog }
+    $dataPath = Read-DagPathChoice -Prompt '  Data file directory — for every data file' -Catalog $Catalog -Kind Data -Default $defData
+    $logPath  = Read-DagPathChoice -Prompt '  Log file directory — for every log file'   -Catalog $Catalog -Kind Log  -Default $defLog
 
     return [pscustomobject]@{
         Replica   = $Replica
-        Precision = $Precision
+        Precision = 'ALL'
         DataPath  = $dataPath
         LogPath   = $logPath
-        Databases = @($dbEntries.ToArray())
-        Files     = @($fileEntries.ToArray())
+        Databases = @()
+        Files     = @()
     }
 }
 
@@ -1202,8 +1136,20 @@ function Show-DagFileLayoutPlacement {
         return
     }
 
+    # Replicas whose files resolve to exactly the same paths are listed once. With shared
+    # answers that is every replica, and printing thirty databases three times over buries
+    # the one replica that differs.
+    $groups = New-Object System.Collections.Specialized.OrderedDictionary
     foreach ($replica in (@($Placements | ForEach-Object { $_.Replica }) | Select-Object -Unique)) {
-        Write-Host "  $replica" -ForegroundColor White
+        $sig = (@($Placements | Where-Object { $_.Replica -eq $replica } |
+                    ForEach-Object { '{0}|{1}|{2}' -f $_.DatabaseName, $_.LogicalName, $_.TargetPath.ToLowerInvariant() }) -join "`n")
+        if (-not $groups.Contains($sig)) { $groups.Add($sig, (New-Object System.Collections.Generic.List[string])) }
+        $groups[$sig].Add($replica)
+    }
+
+    foreach ($members in $groups.Values) {
+        $replica = $members[0]
+        Write-Host ('  {0}' -f ($members -join ', ')) -ForegroundColor White
         $forReplica = @($Placements | Where-Object { $_.Replica -eq $replica })
 
         foreach ($db in (@($forReplica | ForEach-Object { $_.DatabaseName }) | Select-Object -Unique)) {
@@ -1226,8 +1172,13 @@ function Show-DagFileLayoutPlacement {
 
         # How much is being asked of each volume, against what it has left. The arithmetic
         # is the reason an operator picked one directory over another, so show it.
-        if ($Catalogs -and $Catalogs.ContainsKey($replica)) {
-            Show-DagVolumeDemand -Placements $forReplica -FreeSpace $Catalogs[$replica].FreeSpace -Indent '      '
+        # Free space is each replica's own, so the demand is shown per member even when the
+        # destinations are shared.
+        foreach ($m in $members) {
+            if (-not ($Catalogs -and $Catalogs.ContainsKey($m))) { continue }
+            if ($members.Count -gt 1) { Write-Host ('      on {0}:' -f $m) -ForegroundColor DarkGray }
+            Show-DagVolumeDemand -Placements @($Placements | Where-Object { $_.Replica -eq $m }) `
+                -FreeSpace $Catalogs[$m].FreeSpace -Indent $(if ($members.Count -gt 1) { '        ' } else { '      ' })
         }
     }
 }

@@ -87,26 +87,101 @@ at all, so **Choose** has two independent axes.
 
 **How precisely** you want to place them:
 
-| Precision | What you answer | Questions |
-|---|---|---|
-| **All databases together** | One data directory and one log directory for every file. | 2 |
-| **Per database** | A data directory and a log directory for each database. All of that database's data files go to one place, all of its log files to another. | 2 per database |
-| **Per file** | A directory for each individual file, so one database's data files can be split across several locations. | 1 per file |
+| Precision | What you answer |
+|---|---|
+| **All databases together** | One data directory and one log directory for every file. Two questions. |
+| **Per database** | Each database's data files go to one directory and its log files to another, spread across as many directories as you name. Answered on the placement board (below). |
+| **Per file** | The same board with one row per file, so one database's data files can be split across several locations. |
 
 **Whether the replicas differ.** Asked only when more than one replica is being restored onto,
 and defaulting to "the same on every replica", which is almost always what a forwarder AG with
 matching drive letters wants. Answer "different per replica" and each one is asked separately.
 
-So a target AG with `D:\Data`, `E:\Data` and `H:\Data` for data and `L:\Log` and `M:\Log` for
-logs can send `Database1` to `D:\Data` + `L:\Log` and `Database2` to `H:\Data` + `M:\Log`
+So a target AG with `E:\Data`, `F:\Data` and `G:\Data` for data and `L:\Log` and `M:\Log` for
+logs can send `Database1` to `E:\Data` + `L:\Log` and `Database2` to `G:\Data` + `M:\Log`
 (per database), or spread `Database1`'s three data files across all three data locations
 (per file).
 
-Every directory is picked from a **numbered menu** of what that replica actually has, annotated
-with how many database files are already there and how much room is left on the volume. The last
-entry always lets you type a path that does not exist yet — preflight creates it. At per-file
-precision the first entry is the directory the file has today, so relocating most of a database
-and leaving the rest where it is costs one keystroke each.
+At **all databases together**, each directory is picked from a **numbered menu** of what that
+replica actually has, annotated with how many database files are already there and how much room
+is left on the volume. The last entry always lets you type a path that does not exist yet:
+preflight creates it.
+
+#### The placement board (per database and per file)
+
+Thirty databases used to be sixty separate menus, with the free space of every drive kept in
+your head. Instead:
+
+1. **Pick the pools.** Once for data and once for log files, choose by number *every* directory
+   those files may go to: `2,3,4` for three data drives, `5,6` for two log drives. Each candidate
+   shows its free space. When one set of answers is used on several replicas, the figure is the
+   **smallest** any of them reports, and a drive that one of them does not have is flagged
+   `NOT on <replica>` right there.
+2. **Automatic first draft.** Every database is spread across its pool largest first, each onto
+   whichever destination's **volume** keeps the most room. Unequal drives are filled in
+   proportion, so a 6 TB volume takes work before a 500 GB one does.
+3. **Adjust on one screen.** The board lists every database with its sizes and destination, then
+   a running ledger: what each destination holds, and per volume the free space now, what is
+   assigned and what is left after, with a fill bar. Directories that share a volume share its
+   free space, and data and log on the same disk are counted together. A volume that would
+   overflow is marked `<< OVER`.
+
+```
+   #  Database              Data -> to            Log -> to
+   1  App01            107.00 MB -> D3       22.00 MB -> L1
+   2  App02            280.00 MB -> D2       10.00 MB -> L1
+  ...
+  23  Sales01          163.00 MB -> D3*      32.00 MB -> L1
+  * placed by you - "auto" leaves these alone
+
+  Destinations
+    D1   E:\Data       data    9 db(s)     1.82 GB
+    D2   F:\Data       data    9 db(s)     1.83 GB
+    D3   G:\Data       data   10 db(s)     1.85 GB
+    L1   H:\Log        log    14 db(s)   332.00 MB
+    L2   I:\Log        log    14 db(s)   332.00 MB
+
+  Volumes  (directories on one volume share its space - free is the smallest of SQLLAB-SQL7, SQLLAB-SQL8)
+                                    free now     assigned   left after
+    E:   [#############.......]      2.96 GB      1.82 GB      1.15 GB   D1
+    F:   [#############.......]      2.96 GB      1.83 GB      1.13 GB   D2
+    G:   [#############.......]      2.96 GB      1.85 GB      1.12 GB   D3
+    H:   [##############......]    479.00 MB    332.00 MB    147.00 MB   L1
+    I:   [##############......]    479.00 MB    332.00 MB    147.00 MB   L2
+Board:
+```
+
+Commands. Separate row numbers with commas or spaces; case does not matter.
+
+| Command | Effect |
+|---|---|
+| `3 D2` / `1-5,9 L1` | Send those rows' data (a `D` destination) or log (an `L` destination) files there |
+| `4 D3 L2` | Data and log in one go |
+| `Sales* D1` | Every row whose database (or, per file, logical file) name matches the wildcard |
+| `D1 D3` | Everything currently on D1 moves to D3: drain a drive |
+| `all D2` | Every data file to D2. A `D` destination never takes log files, and an `L` destination never takes data files |
+| `auto` | Rebalance everything you have **not** placed yourself, around what you have |
+| `auto 10-28` / `auto all` | Re-plan exactly those rows, or every row, including ones you placed |
+| `add data` / `add log` | Add another directory to a pool from the replica's menu |
+| `remove D2` | Take a destination out; what was on it is rebalanced across the rest of its pool |
+| `keep 3` | Leave those files in the directory they have today |
+| `undo` | Take back the last change, any number of times |
+| `?` | List the commands |
+| ENTER | Finished |
+
+Anything you place yourself (with a move or `keep`) is marked `*` in the table and **pinned**:
+a bare `auto` balances everything else around it, so `Sales* D3` followed by `auto` keeps the
+Sales databases on D3 and spreads the rest over what is left.
+
+Finishing is refused while two files would land on the same path. Finishing with a volume over
+capacity asks first, because a thin-provisioned or soon-to-be-extended volume is a legitimate
+reason to go ahead.
+
+With **different directories per replica**, the second replica's board can start from the
+first one's assignments, so only the differences need changing.
+
+The replica-level fallback recorded in the plan (see *How a destination is decided*) is the
+destination in each pool with the most room left.
 
 Nothing is committed from the answers alone. The destination of **every file on every replica**
 is resolved and printed back, with the total being written to each volume against its free
@@ -114,7 +189,7 @@ space, and you either accept it or answer the question again:
 
 ```
 Where the files will land — directories CHOSEN for this run
-  SQLLAB-SQL7
+  SQLLAB-SQL7, SQLLAB-SQL8
       MigrationDB1
           MigrationDB1               data       -> D:\Data\MigrationDB1.mdf
           MigrationDB1_dat2          data       -> D:\Data2\MigrationDB1_dat2.ndf
@@ -125,7 +200,8 @@ Where the files will land — directories CHOSEN for this run
 ```
 
 A database whose files all land in one data directory and one log directory is summarised as
-that single line; one whose files are split is listed file by file.
+that single line; one whose files are split is listed file by file. Replicas whose files resolve
+to exactly the same paths are listed once, with the volume totals still shown for each.
 
 #### How a destination is decided
 

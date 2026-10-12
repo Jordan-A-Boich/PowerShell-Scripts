@@ -20,9 +20,10 @@
       * For manual seeding, puts the restored data and log files where you tell it to:
         reuse the structure the databases have today, take each target's own default
         directories, or choose the directories yourself — for everything at once, per
-        database, or per individual file, the same on every replica or not. Each one is
-        picked from a numbered list of what that replica actually has, with free space,
-        and the destination of every file is shown back for approval before anything runs.
+        database, or per individual file, the same on every replica or not. Per database
+        and per file, you pick the set of drives once, the databases are balanced across
+        them by free space, and you adjust on one board with a running total per volume.
+        The destination of every file is shown back for approval before anything runs.
       * Settles the DAG into asynchronous commit and prints a health rollup.
 
     Assumptions:
@@ -118,6 +119,7 @@ foreach ($file in @(
         'DagDiscovery.ps1'
         'DagFileOps.ps1'
         'DagFileLayout.ps1'
+        'DagPlacementBoard.ps1'
         'DagBackupRestore.ps1'
         'DagAgentJob.ps1'
         'DagHealth.ps1'
