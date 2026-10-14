@@ -8,6 +8,7 @@ A personal collection of PowerShell automation scripts for Windows infrastructur
 
 | Folder | Description |
 |--------|-------------|
+| [AG](./AG/README.md) | Prompt-driven, end-to-end creation of Always On availability groups on an existing WSFC (standard, contained or basic), plus adding and removing databases — prerequisite checks and repairs, listener, automatic or manual seeding |
 | [SQLLabBuilder](./SQLLabBuilder/README.md) | Fully automated Hyper-V lab builder that provisions a SQL Server Always On Availability Group environment from scratch; supports SQL Server 2019, 2022, and 2025 Developer Edition with optional Contained AG support (2022+) |
 
 More scripts and tools will be added over time.
