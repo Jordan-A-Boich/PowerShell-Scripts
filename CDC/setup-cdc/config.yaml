@@ -1,0 +1,43 @@
+name: Setup CDC
+description: Prompt-driven CDC setup that enables databases and tables for change data capture, with AG-aware job configuration synchronized to every secondary replica so CDC survives failover.
+kind: script
+promptBased: true
+parameters:
+  - name: DBA_SERVERS
+    description: Optional environment variable. Pre-fills the server name prompt (first entry when semicolon-separated).
+  - name: DBA_USERNAME
+    description: Optional environment variable. SQL login to use instead of the login prompt; leave unset for Windows authentication or interactive prompts.
+  - name: DBA_PASSWORD
+    description: Optional environment variable. Password for DBA_USERNAME; only read when DBA_USERNAME is set.
+exampleOutput: |
+  === CDC Setup ===
+
+  Server name: SQLLAB-SQL1
+    [OK]   Connected to SQLLAB-SQL1 (SQL Server 17.0.4006.2, Enterprise Developer Edition (64-bit))
+
+  Available databases:
+     1. DeadlockLab [CDC enabled]
+     2. Test [CDC enabled] [AG: SQLLabAG]
+
+  Select database(s) to enable CDC on (e.g. 1,3): 2
+
+  High Availability detected for database(s):
+    - Test (AG: SQLLabAG)
+  Capture and cleanup jobs will be properly synchronized in the AG so functionality persists after failover.
+
+  --- Test ---
+  Tables available for CDC:
+     1. dbo.Orders
+  Select table(s) to enable ('all' for every table, Enter to skip): 1
+    [OK]   dbo.Orders enabled for CDC
+    [OK]   Capture job schedule 'Start Every 5 Minutes' - added
+    [OK]   'Check To See If Primary' step on cdc.Test_capture - added
+    [OK]   'Check To See If Primary' step on cdc.Test_cleanup - added
+    [OK]   SQLLAB-SQL2 - job cdc.Test_capture synced (3 step(s), 2 schedule(s))
+    [OK]   SQLLAB-SQL2 - cdc_jobs metadata synced (2 row(s), job ids remapped)
+
+  Summary:
+    Test - CDC on, tables added: 1, AG-synced to 1 secondary replica(s)
+steps:
+  - name: script
+    file: setup-cdc.ps1

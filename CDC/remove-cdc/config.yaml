@@ -1,0 +1,37 @@
+name: Remove CDC
+description: Prompt-driven CDC removal - disable CDC for a whole database or stop tracking specific tables, with confirmation warnings and cleanup on every AG secondary replica.
+kind: script
+promptBased: true
+parameters:
+  - name: DBA_SERVERS
+    description: Optional environment variable. Pre-fills the server name prompt (first entry when semicolon-separated). Connect to the primary replica for AG databases.
+  - name: DBA_USERNAME
+    description: Optional environment variable. SQL login to use instead of the login prompt; leave unset for Windows authentication or interactive prompts.
+  - name: DBA_PASSWORD
+    description: Optional environment variable. Password for DBA_USERNAME; only read when DBA_USERNAME is set.
+exampleOutput: |
+  === Remove CDC ===
+
+  Server name: SQLLAB-SQL1
+    [OK]   Connected to SQLLAB-SQL1 (SQL Server 17.0.4006.2, Enterprise Developer Edition (64-bit))
+
+  CDC-enabled databases:
+     1. CDC_Sales [AG: SQLLabAG]
+     2. DeadlockLab
+
+  Select database(s) to remove CDC from (e.g. 1,3): 1
+
+  --- CDC_Sales ---
+    [..]   2 tracked table(s): dbo.Customers, dbo.Orders
+  Remove CDC from the entire [D]atabase, specific [T]ables, or [S]kip [s]: d
+    [WARN] This will turn OFF CDC for ALL 2 tracked table(s) in 'CDC_Sales', delete their captured change data, and remove the capture and cleanup jobs.
+    [WARN] The capture/cleanup jobs and cdc_jobs metadata will also be removed from every secondary replica of AG 'SQLLabAG'.
+  Continue (y/N): y
+    [OK]   CDC disabled for 'CDC_Sales' (jobs removed on SQLLAB-SQL1)
+    [OK]   SQLLAB-SQL2 - capture/cleanup jobs and cdc_jobs rows removed
+
+  Summary:
+    CDC_Sales - CDC removed (database level)
+steps:
+  - name: script
+    file: remove-cdc.ps1

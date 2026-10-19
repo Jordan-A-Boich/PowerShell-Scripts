@@ -1,0 +1,3 @@
+name: CDC
+description: Contains PowerShell and T-SQL scripts to help troubleshoot and resolve found CDC issues
+kind: directory

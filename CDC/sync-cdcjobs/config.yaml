@@ -1,0 +1,39 @@
+name: Sync CDC Jobs
+description: Health check and repair for established CDC in Availability Groups - rolls up your CDC job topology, flags drift across replicas, and fixes all or selected findings.
+kind: script
+promptBased: true
+parameters:
+  - name: DBA_SERVERS
+    description: Optional environment variable. Pre-fills the server name prompt (first entry when semicolon-separated). Any replica works - checks run against the AG primary automatically.
+  - name: DBA_USERNAME
+    description: Optional environment variable. SQL login to use instead of the login prompt; leave unset for Windows authentication or interactive prompts.
+  - name: DBA_PASSWORD
+    description: Optional environment variable. Password for DBA_USERNAME; only read when DBA_USERNAME is set.
+exampleOutput: |
+  === CDC Job Sync Check ===
+
+  Server name: SQLLAB-SQL1
+    [OK]   Connected to SQLLAB-SQL1 (SQL Server 17.0.4006.2, Enterprise Developer Edition (64-bit))
+
+  CDC topology:
+    Test            AG SQLLabAG (primary SQLLAB-SQL1, 1 secondary)  -  3 tracked table(s)
+    DeadlockLab     standalone  -  1 tracked table(s)
+
+    [..]   Analyzing...
+
+  Findings (3):
+     1. [DeadlockLab] capture job is missing the 'Start Every 5 Minutes' schedule
+     2. [Test] cdc.Test_cleanup 'Check To See If Primary' step is missing
+     3. [Test -> SQLLAB-SQL2] secondary out of sync: job cdc.Test_capture missing
+
+  Fix findings - numbers (e.g. 1,3), 'all', or Enter to exit: all
+
+    [OK]   #1 fixed: [DeadlockLab] capture job is missing the 'Start Every 5 Minutes' schedule
+    [OK]   #2 fixed: [Test] cdc.Test_cleanup 'Check To See If Primary' step is missing
+    [OK]   #3 fixed: [Test -> SQLLAB-SQL2] secondary out of sync: job cdc.Test_capture missing
+
+    [..]   Re-scanning...
+    [OK]   Re-scan clean - no issues remain.
+steps:
+  - name: script
+    file: sync-cdcjobs.ps1

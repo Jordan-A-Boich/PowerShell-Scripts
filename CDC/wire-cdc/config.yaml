@@ -1,0 +1,50 @@
+name: Wire Up CDC
+description: Post-migration CDC wiring for side-by-side migrated databases - recreates the msdb pieces the migration left behind (cdc_jobs table/view, capture and cleanup Agent jobs) for databases that arrived with CDC metadata and tracked tables intact. Replication-aware (published databases get cleanup only - the Log Reader Agent captures) and AG-aware (guard steps plus full synchronization to every secondary replica).
+kind: script
+promptBased: true
+parameters:
+  - name: DBA_SERVERS
+    description: Optional environment variable. Pre-fills the server name prompt (first entry when semicolon-separated). Connect to the PRIMARY replica for AG databases.
+  - name: DBA_USERNAME
+    description: Optional environment variable. SQL login to use instead of the login prompt; leave unset for Windows authentication or interactive prompts.
+  - name: DBA_PASSWORD
+    description: Optional environment variable. Password for DBA_USERNAME; only read when DBA_USERNAME is set.
+exampleOutput: |
+  === CDC Wire-Up (Post-Migration) ===
+
+  Server name: SQLLAB-SQL1
+    [OK]   Connected to SQLLAB-SQL1 (SQL Server 17.0.4006.2, Enterprise Developer Edition (64-bit))
+    [OK]   msdb metadata objects: cdc_jobs table exists, cdc_jobs_view exists
+
+  CDC-enabled databases:
+     1. DeadlockLab [jobs wired]
+     2. Test [missing: capture, cleanup] [AG: SQLLabAG]
+
+  Select database(s) to wire up (e.g. 1,3 or 'all'): 2
+
+  High Availability detected for database(s):
+    - Test (AG: SQLLabAG)
+  Capture and cleanup jobs will be properly synchronized in the AG so functionality persists after failover.
+
+  --- Test ---
+    [..]   3 tracked table(s) found - internal CDC metadata is intact.
+    [OK]   cdc.Test_capture created and started
+  Cleanup retention in minutes [5760]: 4320
+    [OK]   cdc.Test_cleanup created and started (retention 4320 min)
+    [OK]   Capture job schedule 'Start Every 5 Minutes' - added
+  Availability Groups on this server:
+     1. SQLLabAG (detected for Test)
+  Select the Availability Group (Enter to accept detected):
+    [OK]   'Check To See If Primary' step on cdc.Test_capture - added
+    [OK]   'Check To See If Primary' step on cdc.Test_cleanup - added
+    [..]   Synchronizing to secondary replica SQLLAB-SQL2
+    [OK]   SQLLAB-SQL2 - cdc_jobs table exists, cdc_jobs_view exists
+    [OK]   SQLLAB-SQL2 - job cdc.Test_capture synced (3 step(s), 2 schedule(s))
+    [OK]   SQLLAB-SQL2 - job cdc.Test_cleanup synced (2 step(s), 1 schedule(s))
+    [OK]   SQLLAB-SQL2 - cdc_jobs metadata synced (2 row(s), job ids remapped)
+
+  Summary:
+    Test - jobs created: capture, cleanup, AG-synced to 1 secondary replica(s)
+steps:
+  - name: script
+    file: wireup-cdc.ps1
